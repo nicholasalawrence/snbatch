@@ -5,7 +5,7 @@
  * Threat model: protects credentials from casual file reads.
  * Not a substitute for a hardware security module or secrets manager.
  */
-import { scryptSync, randomBytes, createCipheriv, createDecipheriv } from 'crypto';
+import { scryptSync, randomBytes, createCipheriv, createDecipheriv, createHash } from 'crypto';
 
 const ALGORITHM = 'aes-256-gcm';
 const SALT_LEN = 16;
@@ -51,4 +51,13 @@ export function decrypt(ciphertext, passphrase) {
   const decipher = createDecipheriv(ALGORITHM, key, iv);
   decipher.setAuthTag(authTag);
   return decipher.update(data, undefined, 'utf8') + decipher.final('utf8');
+}
+
+/**
+ * P1-5: Hash a rollback token for safe storage in history.
+ * @param {string} token
+ * @returns {string} SHA-256 hex digest
+ */
+export function hashRollbackToken(token) {
+  return createHash('sha256').update(token).digest('hex');
 }

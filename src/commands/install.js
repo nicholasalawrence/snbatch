@@ -16,10 +16,12 @@ import { printTable, printInfo, printWarn, printError, printSuccess, createSpinn
 import { riskEmoji, upgradeType } from '../utils/version.js';
 import { HISTORY_PATH, SNBATCH_DIR } from '../utils/paths.js';
 import { createLogger } from '../utils/logger.js';
+import { hashRollbackToken } from '../utils/crypto.js';
 
+// P2-10: Restricted file permissions for history
 async function appendHistory(entry) {
-  await mkdir(SNBATCH_DIR, { recursive: true });
-  await appendFile(HISTORY_PATH, JSON.stringify(entry) + '\n');
+  await mkdir(SNBATCH_DIR, { recursive: true, mode: 0o700 });
+  await appendFile(HISTORY_PATH, JSON.stringify(entry) + '\n', { mode: 0o600 });
 }
 
 async function confirmInstall(packages, instanceHost, skipConfirm) {
@@ -73,7 +75,8 @@ export function installCommand() {
     .option('--stop-on-error', 'Halt on first package failure')
     .option('--profile <name>', 'Target profile')
     .option('--poll-interval <seconds>', 'Poll interval in seconds', '10')
-    .option('--resume', 'Resume the most recent interrupted batch')
+    .option('--allow-insecure-http', 'Allow HTTP connections (credentials sent in plaintext)')
+    // P2-12: --resume removed — planned for v1.1
     .action(async (opts) => {
       const config = await loadConfig({
         stopOnError: opts.stopOnError,
@@ -82,17 +85,15 @@ export function installCommand() {
       });
 
       try {
-        const creds = await resolveCredentials(opts.profile);
+        const creds = await resolveCredentials(opts.profile, { allowInsecureHttp: opts.allowInsecureHttp });
         const client = createClient(creds);
         const logger = await createLogger(creds.instanceHost);
+        // P2-7: Thread retry config to API calls
+        const retryOpts = { retries: config.retries, backoffBase: config.backoffBase };
 
         let packages;
 
-        if (opts.resume) {
-          // TODO: implement resume from history
-          printError('--resume not yet implemented in this version.');
-          process.exit(2);
-        } else if (opts.manifest) {
+        if (opts.manifest) {
           const manifest = await readManifest(opts.manifest);
           packages = manifest.packages;
           printInfo(`Loaded manifest: ${manifest.packages.length} package(s) from ${manifest.metadata.instance}`);
@@ -106,6 +107,15 @@ export function installCommand() {
           if (opts.patches) packages = upgrades.filter((p) => p.upgradeType === 'patch');
           else if (opts.minor) packages = upgrades.filter((p) => ['patch', 'minor'].includes(p.upgradeType));
           else packages = upgrades;
+        }
+
+        // P1-2: Filter by --scope (exact match)
+        if (opts.scope) {
+          packages = packages.filter((p) => p.scope === opts.scope);
+          if (!packages.length) {
+            printError(`No package found with scope: ${opts.scope}`);
+            process.exit(2);
+          }
         }
 
         // Apply excludes
@@ -129,7 +139,7 @@ export function installCommand() {
         const spinner = createSpinner(`Starting batch install of ${packages.length} package(s)...`);
         spinner.start();
 
-        const { progressId, rollbackToken } = await startBatchInstall(client, payloads);
+        const { progressId, rollbackToken } = await startBatchInstall(client, payloads, retryOpts);
         logger.info('Batch install started', { progressId, rollbackToken, packages: packages.map((p) => p.scope) });
 
         let lastData = null;
@@ -139,6 +149,8 @@ export function installCommand() {
         for await (const data of pollProgress(client, progressId, {
           pollInterval: config.pollInterval,
           maxPollDuration: config.maxPollDuration,
+          retries: config.retries,
+          backoffBase: config.backoffBase,
         })) {
           lastData = data;
           const pct = data.percentComplete ?? data.percent_complete ?? 0;
@@ -167,6 +179,10 @@ export function installCommand() {
           );
         }
 
+        // P1-5: Hash rollback token for history, show only last 4 chars
+        const tokenHash = rollbackToken ? hashRollbackToken(rollbackToken) : null;
+        const tokenHint = rollbackToken ? `...${rollbackToken.slice(-4)}` : null;
+
         // Write history
         const histEntry = {
           id: crypto.randomUUID(),
@@ -178,20 +194,22 @@ export function installCommand() {
           packages: packages.map((p) => ({ scope: p.scope, from: p.currentVersion, to: p.targetVersion })),
           result: failed === 0 ? 'success' : succeeded === 0 ? 'failed' : 'partial',
           progressId,
-          rollbackToken,
+          rollbackTokenHash: tokenHash,
+          rollbackTokenHint: tokenHint,
         };
         await appendHistory(histEntry);
         logger.info('Batch install complete', { succeeded, failed, rollbackToken });
 
         if (failed > 0 && succeeded > 0) {
-          printWarn(`Partial success: ${succeeded} succeeded, ${failed} failed. Rollback token: ${rollbackToken}`);
+          printWarn(`Partial success: ${succeeded} succeeded, ${failed} failed. Rollback token: ${tokenHint}`);
           process.exit(1);
         } else if (failed > 0) {
-          printError(`All ${failed} package(s) failed. Rollback token: ${rollbackToken}`);
-          process.exit(1);
+          // P2-11: All-failed → exit code 2 (fatal), not 1 (partial)
+          printError(`All ${failed} package(s) failed. Rollback token: ${tokenHint}`);
+          process.exit(2);
         } else {
           printSuccess(`All ${succeeded} package(s) installed successfully.`);
-          if (rollbackToken) printInfo(`Rollback token: ${rollbackToken}`);
+          if (tokenHint) printInfo(`Rollback token: ${tokenHint}`);
         }
       } catch (err) {
         printError(err.message);

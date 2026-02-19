@@ -1,5 +1,9 @@
 /**
  * snbatch scan — discover available updates
+ *
+ * P1-3: Plugins are included in scan output. Since ServiceNow does not expose a
+ * plugin version API, plugins with no version change are reported with upgradeType
+ * 'unknown' rather than silently excluded.
  */
 import { Command } from 'commander';
 import { resolveCredentials } from '../api/auth.js';
@@ -17,10 +21,12 @@ import { loadConfig } from '../utils/config.js';
 export async function scanData(profileName, config) {
   const creds = await resolveCredentials(profileName);
   const client = createClient(creds);
+  // P2-7: Thread retry config
+  const retryOpts = { retries: config.retries, backoffBase: config.backoffBase };
 
   const [apps, plugins, instanceVersion] = await Promise.all([
-    fetchInstalledApps(client),
-    config.type !== 'app' ? fetchPlugins(client) : Promise.resolve([]),
+    fetchInstalledApps(client, retryOpts),
+    config.type !== 'app' ? fetchPlugins(client, retryOpts) : Promise.resolve([]),
     fetchInstanceVersion(client),
   ]);
 
@@ -31,15 +37,28 @@ export async function scanData(profileName, config) {
 
   // Fetch available versions for apps (plugins don't use the same version API)
   const sourceIds = filtered.filter((p) => p.type === 'app' && p.sourceId).map((p) => p.sourceId);
-  const versionMap = await fetchAvailableVersions(client, sourceIds);
+  const versionMap = await fetchAvailableVersions(client, sourceIds, retryOpts);
 
   const packages = filtered.map((p) => {
-    const latestVersion = p.type === 'app' ? (versionMap.get(p.sourceId) ?? p.version) : p.version;
-    return buildPackageObject(p, latestVersion);
+    if (p.type === 'app') {
+      const latestVersion = versionMap.get(p.sourceId) ?? p.version;
+      return buildPackageObject(p, latestVersion);
+    }
+    // P1-3: Plugins — no version API, report as 'unknown' update status
+    // Set targetVersion to null to indicate unknown rather than same-as-current
+    return {
+      ...buildPackageObject(p, p.version),
+      upgradeType: 'unknown',
+      targetVersion: 'unknown',
+      packageType: 'plugin',
+    };
   });
 
-  // Only packages with actual upgrades
-  const upgrades = packages.filter((p) => isUpgrade(p.currentVersion, p.targetVersion));
+  // For apps: only include actual upgrades
+  // For plugins: always include (update status is unknown)
+  const upgrades = packages.filter((p) =>
+    p.packageType === 'plugin' || isUpgrade(p.currentVersion, p.targetVersion)
+  );
 
   return { upgrades, creds, instanceVersion };
 }
@@ -52,6 +71,7 @@ export function scanCommand() {
     .option('--patches-only', 'Show only patch-level updates')
     .option('--type <type>', 'Filter by type: app|plugin|all', 'all')
     .option('--json', 'Output JSON (alias for --format json)')
+    .option('--exclude <scopes>', 'Comma-separated scopes to exclude')
     .action(async (opts) => {
       const config = await loadConfig({
         type: opts.type,
@@ -81,19 +101,20 @@ export function scanCommand() {
         }
 
         printTable(
-          ['Application / Plugin', 'Scope', 'Current', 'Latest', 'Risk'],
+          ['Application / Plugin', 'Scope', 'Type', 'Current', 'Latest', 'Risk'],
           results.map((p) => [
             p.name,
             p.scope,
+            p.packageType ?? 'app',
             p.currentVersion,
             p.targetVersion,
-            riskEmoji(p.upgradeType),
+            p.upgradeType === 'unknown' ? '❓' : riskEmoji(p.upgradeType),
           ])
         );
 
-        const counts = { patch: 0, minor: 0, major: 0 };
+        const counts = { patch: 0, minor: 0, major: 0, unknown: 0 };
         for (const p of results) counts[p.upgradeType] = (counts[p.upgradeType] ?? 0) + 1;
-        printInfo(`Summary: ${counts.patch} patches, ${counts.minor} minor, ${counts.major} major — ${results.length} total updates available`);
+        printInfo(`Summary: ${counts.patch} patches, ${counts.minor} minor, ${counts.major} major, ${counts.unknown} plugins (update status unknown) — ${results.length} total`);
       } catch (err) {
         if (!isJson) spinner.fail('Scan failed');
         printError(err.message);

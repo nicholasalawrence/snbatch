@@ -9,12 +9,30 @@ import { LOGS_DIR } from './paths.js';
 
 const MCP_MODE = process.env.SNBATCH_MCP_MODE === '1';
 
+// P3-1: Expanded list of sensitive key patterns
+const SENSITIVE_KEY_PATTERNS = [
+  'password', 'token', 'auth', 'secret',
+  'apikey', 'api_key', 'credential', 'bearer',
+  'authorization', 'private_key', 'access_token',
+];
+
+// P3-1: Pattern for URL-embedded credentials (://user:pass@)
+const URL_CREDENTIAL_RE = /:\/\/[^:]+:[^@]+@/;
+
 function sanitize(obj) {
+  if (typeof obj === 'string') {
+    // Redact URL-embedded credentials
+    if (URL_CREDENTIAL_RE.test(obj)) {
+      return obj.replace(/:\/\/([^:]+):[^@]+@/, '://$1:[REDACTED]@');
+    }
+    return obj;
+  }
   if (typeof obj !== 'object' || obj === null) return obj;
+  if (Array.isArray(obj)) return obj.map(sanitize);
   const out = {};
   for (const [k, v] of Object.entries(obj)) {
     const lk = k.toLowerCase();
-    if (lk.includes('password') || lk.includes('token') || lk.includes('auth') || lk.includes('secret')) {
+    if (SENSITIVE_KEY_PATTERNS.some((p) => lk.includes(p))) {
       out[k] = '[REDACTED]';
     } else {
       out[k] = sanitize(v);
@@ -22,6 +40,9 @@ function sanitize(obj) {
   }
   return out;
 }
+
+// Exported for testing
+export { sanitize };
 
 /**
  * Create a logger bound to a specific instance and run.
@@ -33,14 +54,16 @@ export async function createLogger(instanceHost) {
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const logFile = join(LOGS_DIR, `${safe}-${ts}.log`);
 
-  await mkdir(LOGS_DIR, { recursive: true });
+  // P2-10: Create log directory with restricted permissions
+  await mkdir(LOGS_DIR, { recursive: true, mode: 0o700 });
 
   function writeLine(level, message, meta = {}) {
     const line = JSON.stringify({ timestamp: new Date().toISOString(), level, message, ...sanitize(meta) });
     if (MCP_MODE) {
       process.stderr.write(line + '\n');
     } else {
-      appendFile(logFile, line + '\n').catch(() => {});
+      // P2-10: Write log files with restricted permissions
+      appendFile(logFile, line + '\n', { mode: 0o600 }).catch(() => {});
     }
   }
 

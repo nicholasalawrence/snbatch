@@ -37,8 +37,10 @@ export async function withRetry(fn, opts = {}) {
 
       let waitMs;
       if (status === 429) {
+        // P2-1: Guard against NaN from malformed or HTTP-date Retry-After values
         const retryAfter = err?.response?.headers?.['retry-after'];
-        waitMs = retryAfter ? parseInt(retryAfter, 10) * 1000 : 30_000;
+        const parsed = parseInt(retryAfter, 10);
+        waitMs = (!isNaN(parsed) && parsed > 0) ? parsed * 1000 : 30_000;
       } else {
         waitMs = backoffBase * Math.pow(2, attempt);
       }

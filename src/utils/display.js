@@ -13,6 +13,15 @@ if (NO_COLOR) {
   chalk.level = 0;
 }
 
+// P3-3: Strip ANSI escape sequences and control characters from API data
+const CONTROL_CHARS_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g;
+const ANSI_ESCAPE_RE = /\x1B\[[0-9;]*[A-Za-z]/g;
+
+export function stripAnsi(str) {
+  if (typeof str !== 'string') return str;
+  return str.replace(ANSI_ESCAPE_RE, '').replace(CONTROL_CHARS_RE, '');
+}
+
 export function printSuccess(msg) {
   if (MCP_MODE) return;
   console.error(chalk.green('✅ ' + msg));
@@ -44,7 +53,8 @@ export function printTable(headers, rows) {
     head: headers.map((h) => chalk.bold(h)),
     style: { compact: false },
   });
-  for (const row of rows) table.push(row);
+  // P3-3: sanitize all cell values before display
+  for (const row of rows) table.push(row.map(stripAnsi));
   console.error(table.toString());
 }
 
@@ -54,7 +64,9 @@ export function printTable(headers, rows) {
  */
 export function createSpinner(text) {
   if (MCP_MODE) {
-    return { start: () => {}, succeed: () => {}, fail: () => {}, warn: () => {}, text: '' };
+    // P0-2: include all methods that callers use (stop, clear, stopAndPersist)
+    const noop = () => {};
+    return { start: noop, succeed: noop, fail: noop, warn: noop, stop: noop, clear: noop, stopAndPersist: noop, text: '' };
   }
   return ora({ text, stream: process.stderr });
 }

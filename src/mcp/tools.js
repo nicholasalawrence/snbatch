@@ -1,23 +1,27 @@
 /**
  * MCP tool definitions and handlers.
  * Handlers call the data layer directly — display layer is skipped.
+ *
+ * P0-1: Uses McpServer.tool() API which auto-converts zod→JSON Schema.
+ * P2-9: All file path parameters are validated against path traversal.
+ * P3-6: Error messages returned to MCP client are generic; full details go to stderr.
  */
 import { z } from 'zod';
+import path from 'path';
 import { resolveCredentials } from '../api/auth.js';
 import { createClient } from '../api/index.js';
 import { startBatchInstall, startBatchRollback, pollProgress } from '../api/cicd.js';
-import { fetchInstalledApps, fetchAvailableVersions, fetchInstanceVersion } from '../api/table.js';
-import { buildPackageObject, toInstallPayload } from '../models/package.js';
+import { fetchInstalledApps, fetchPlugins } from '../api/table.js';
+import { toInstallPayload } from '../models/package.js';
 import { buildManifest, readManifest, writeManifest, defaultManifestName } from '../models/manifest.js';
 import { reconcilePackages } from '../commands/reconcile.js';
 import { scanData } from '../commands/scan.js';
 import { listProfiles } from '../utils/profiles.js';
 import { loadConfig } from '../utils/config.js';
-import { isUpgrade } from '../utils/version.js';
 import { issueConfirmationChallenge, verifyConfirmation, installNeedsConfirmation } from './confirmations.js';
 import { HISTORY_PATH, SNBATCH_DIR } from '../utils/paths.js';
 import { appendFile, mkdir, readFile } from 'fs/promises';
-import { join } from 'path';
+import { hashRollbackToken } from '../utils/crypto.js';
 
 function ok(data) {
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
@@ -27,37 +31,56 @@ function err(message) {
   return { content: [{ type: 'text', text: JSON.stringify({ error: message }) }], isError: true };
 }
 
-async function appendHistory(entry) {
-  await mkdir(SNBATCH_DIR, { recursive: true });
-  await appendFile(HISTORY_PATH, JSON.stringify(entry) + '\n');
+// P3-6: Wrap handler to return generic error messages and log full details to stderr
+function safeErr(e) {
+  process.stderr.write(`[snbatch-mcp] Error: ${e.message}\n${e.stack ?? ''}\n`);
+  return err('An internal error occurred. Check server logs for details.');
 }
 
-export const tools = [
-  {
-    name: 'snbatch_scan',
-    description: 'Scan a ServiceNow instance for available application and plugin updates.',
-    inputSchema: z.object({
+async function appendHistory(entry) {
+  await mkdir(SNBATCH_DIR, { recursive: true, mode: 0o700 });
+  await appendFile(HISTORY_PATH, JSON.stringify(entry) + '\n', { mode: 0o600 });
+}
+
+// P2-9: Validate that a file path is within cwd — reject absolute paths and .. traversal
+function validatePath(filePath) {
+  const resolved = path.resolve(process.cwd(), filePath);
+  if (!resolved.startsWith(process.cwd() + path.sep) && resolved !== process.cwd()) {
+    throw new Error('Path must be within the current working directory');
+  }
+  return resolved;
+}
+
+/**
+ * Register all MCP tools on the given McpServer instance.
+ * @param {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer} server
+ */
+export function registerTools(server) {
+  server.tool(
+    'snbatch_scan',
+    'Scan a ServiceNow instance for available application and plugin updates.',
+    {
       profile: z.string().optional().describe('Profile name to use'),
       type: z.enum(['app', 'plugin', 'all']).optional().default('all'),
-    }),
-    async handler({ profile, type }) {
+    },
+    async ({ profile, type }) => {
       try {
         const config = await loadConfig({ type });
         const { upgrades, creds, instanceVersion } = await scanData(profile, config);
         return ok({ instance: creds.instanceHost, instanceVersion, count: upgrades.length, packages: upgrades });
-      } catch (e) { return err(e.message); }
-    },
-  },
+      } catch (e) { return safeErr(e); }
+    }
+  );
 
-  {
-    name: 'snbatch_preview',
-    description: 'Generate a reviewable upgrade manifest for a ServiceNow instance.',
-    inputSchema: z.object({
+  server.tool(
+    'snbatch_preview',
+    'Generate a reviewable upgrade manifest for a ServiceNow instance.',
+    {
       profile: z.string().optional(),
       scope: z.enum(['patches', 'minor', 'all']).optional().default('all'),
-      output: z.string().optional().describe('Output file path for manifest'),
-    }),
-    async handler({ profile, scope, output }) {
+      output: z.string().optional().describe('Output file path for manifest (relative to cwd)'),
+    },
+    async ({ profile, scope, output }) => {
       try {
         const config = await loadConfig({});
         const { upgrades, creds, instanceVersion } = await scanData(profile, config);
@@ -65,30 +88,31 @@ export const tools = [
         if (scope === 'patches') packages = packages.filter((p) => p.upgradeType === 'patch');
         else if (scope === 'minor') packages = packages.filter((p) => ['patch', 'minor'].includes(p.upgradeType));
         const manifest = buildManifest(packages, creds.baseUrl, profile ?? null, instanceVersion);
-        const path = output ?? join(process.cwd(), defaultManifestName(creds.instanceHost));
-        await writeManifest(manifest, path);
-        return ok({ manifestPath: path, packages: packages.length, stats: manifest.stats });
-      } catch (e) { return err(e.message); }
-    },
-  },
+        const outPath = output ? validatePath(output) : path.join(process.cwd(), defaultManifestName(creds.instanceHost));
+        await writeManifest(manifest, outPath);
+        return ok({ manifestPath: outPath, packages: packages.length, stats: manifest.stats });
+      } catch (e) { return safeErr(e); }
+    }
+  );
 
-  {
-    name: 'snbatch_install',
-    description: 'Execute a batch install. For major updates or rollbacks, a confirmation challenge is issued first — relay it to the user and call again with confirmationToken + confirmationValue.',
-    inputSchema: z.object({
+  server.tool(
+    'snbatch_install',
+    'Execute a batch install. For major updates or rollbacks, a confirmation challenge is issued first — relay it to the user and call again with confirmationToken + confirmationValue.',
+    {
       profile: z.string().optional(),
-      manifest: z.string().optional().describe('Path to a manifest file'),
+      manifest: z.string().optional().describe('Path to a manifest file (relative to cwd)'),
       scope: z.enum(['patches', 'minor', 'all']).optional().default('all'),
       confirmationToken: z.string().optional(),
       confirmationValue: z.string().optional(),
-    }),
-    async handler({ profile, manifest: manifestPath, scope, confirmationToken, confirmationValue }) {
+    },
+    async ({ profile, manifest: manifestPath, scope, confirmationToken, confirmationValue }) => {
       try {
         const config = await loadConfig({});
         let packages;
 
         if (manifestPath) {
-          const m = await readManifest(manifestPath);
+          const safePath = validatePath(manifestPath);
+          const m = await readManifest(safePath);
           packages = m.packages;
         } else {
           const { upgrades } = await scanData(profile, config);
@@ -105,7 +129,8 @@ export const tools = [
             const challenge = issueConfirmationChallenge(creds.instanceHost, 'install');
             return ok({ status: 'requires_confirmation', ...challenge });
           }
-          const result = verifyConfirmation(confirmationToken, confirmationValue ?? '');
+          // P2-8: pass operation type for verification
+          const result = verifyConfirmation(confirmationToken, confirmationValue ?? '', 'install');
           if (!result.valid) return err(result.error);
         }
 
@@ -119,6 +144,10 @@ export const tools = [
           maxPollDuration: config.maxPollDuration,
         })) { lastData = data; }
 
+        // P1-5: hash rollback token for history storage
+        const tokenHash = rollbackToken ? hashRollbackToken(rollbackToken) : null;
+        const tokenHint = rollbackToken ? rollbackToken.slice(-4) : null;
+
         await appendHistory({
           id: crypto.randomUUID(),
           timestamp: new Date().toISOString(),
@@ -129,24 +158,25 @@ export const tools = [
           packages: packages.map((p) => ({ scope: p.scope, from: p.currentVersion, to: p.targetVersion })),
           result: 'success',
           progressId,
-          rollbackToken,
+          rollbackTokenHash: tokenHash,
+          rollbackTokenHint: tokenHint,
         });
 
         return ok({ status: 'complete', progressId, rollbackToken, packages: packages.length, lastResult: lastData });
-      } catch (e) { return err(e.message); }
-    },
-  },
+      } catch (e) { return safeErr(e); }
+    }
+  );
 
-  {
-    name: 'snbatch_rollback',
-    description: 'Roll back a batch installation. Always requires typed confirmation — issue a challenge first.',
-    inputSchema: z.object({
+  server.tool(
+    'snbatch_rollback',
+    'Roll back a batch installation. Always requires typed confirmation — issue a challenge first.',
+    {
       rollbackToken: z.string().describe('Rollback token from install history'),
       profile: z.string().optional(),
       confirmationToken: z.string().optional(),
       confirmationValue: z.string().optional(),
-    }),
-    async handler({ rollbackToken, profile, confirmationToken, confirmationValue }) {
+    },
+    async ({ rollbackToken, profile, confirmationToken, confirmationValue }) => {
       try {
         const creds = await resolveCredentials(profile);
 
@@ -154,7 +184,8 @@ export const tools = [
           const challenge = issueConfirmationChallenge(creds.instanceHost, 'rollback');
           return ok({ status: 'requires_confirmation', ...challenge });
         }
-        const result = verifyConfirmation(confirmationToken, confirmationValue ?? '');
+        // P2-8: pass operation type for verification
+        const result = verifyConfirmation(confirmationToken, confirmationValue ?? '', 'rollback');
         if (!result.valid) return err(result.error);
 
         const client = createClient(creds);
@@ -174,62 +205,73 @@ export const tools = [
           instanceHost: creds.instanceHost,
           profile: profile ?? null,
           action: 'rollback',
-          rollbackToken,
+          rollbackTokenHash: hashRollbackToken(rollbackToken),
+          rollbackTokenHint: rollbackToken.slice(-4),
           result: 'success',
           progressId,
         });
 
         return ok({ status: 'complete', progressId, lastResult: lastData });
-      } catch (e) { return err(e.message); }
-    },
-  },
+      } catch (e) { return safeErr(e); }
+    }
+  );
 
-  {
-    name: 'snbatch_reconcile',
-    description: 'Reconcile a manifest from one environment to another, producing an adjusted manifest.',
-    inputSchema: z.object({
-      manifestPath: z.string().describe('Path to source manifest'),
+  server.tool(
+    'snbatch_reconcile',
+    'Reconcile a manifest from one environment to another, producing an adjusted manifest.',
+    {
+      manifestPath: z.string().describe('Path to source manifest (relative to cwd)'),
       targetProfile: z.string().describe('Profile for target instance'),
       output: z.string().optional(),
-    }),
-    async handler({ manifestPath, targetProfile, output }) {
+    },
+    async ({ manifestPath, targetProfile, output }) => {
       try {
-        const sourceManifest = await readManifest(manifestPath);
+        const safePath = validatePath(manifestPath);
+        const sourceManifest = await readManifest(safePath);
         const creds = await resolveCredentials(targetProfile);
         const client = createClient(creds);
-        const targetApps = await fetchInstalledApps(client);
-        const reconciled = reconcilePackages(sourceManifest.packages, targetApps);
+        // P2-5: include plugins in target scan
+        const [targetApps, targetPlugins] = await Promise.all([
+          fetchInstalledApps(client),
+          fetchPlugins(client),
+        ]);
+        const allTarget = [...targetApps, ...targetPlugins];
+        const reconciled = reconcilePackages(sourceManifest.packages, allTarget);
         const toInstall = reconciled.filter((r) => r.action === 'include');
         const adjusted = buildManifest(toInstall, creds.baseUrl, targetProfile);
-        const path = output ?? join(process.cwd(), defaultManifestName(creds.instanceHost));
-        await writeManifest(adjusted, path);
-        return ok({ adjustedManifestPath: path, toInstall: toInstall.length, skipped: reconciled.length - toInstall.length });
-      } catch (e) { return err(e.message); }
-    },
-  },
+        const outPath = output ? validatePath(output) : path.join(process.cwd(), defaultManifestName(creds.instanceHost));
+        await writeManifest(adjusted, outPath);
+        return ok({ adjustedManifestPath: outPath, toInstall: toInstall.length, skipped: reconciled.length - toInstall.length });
+      } catch (e) { return safeErr(e); }
+    }
+  );
 
-  {
-    name: 'snbatch_profiles',
-    description: 'List available instance profiles.',
-    inputSchema: z.object({}),
-    async handler() {
+  server.tool(
+    'snbatch_profiles',
+    'List available instance profiles.',
+    {},
+    async () => {
       try {
         const profiles = await listProfiles();
         return ok({ profiles });
-      } catch (e) { return err(e.message); }
-    },
-  },
+      } catch (e) { return safeErr(e); }
+    }
+  );
 
-  {
-    name: 'snbatch_history',
-    description: 'Show recent operation history.',
-    inputSchema: z.object({ limit: z.number().optional().default(10) }),
-    async handler({ limit }) {
+  server.tool(
+    'snbatch_history',
+    'Show recent operation history.',
+    {
+      limit: z.number().optional().default(10),
+    },
+    async ({ limit }) => {
       try {
         const raw = await readFile(HISTORY_PATH, 'utf8').catch(() => '');
-        const entries = raw.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+        const entries = raw.trim().split('\n').filter(Boolean).map((l) => {
+          try { return JSON.parse(l); } catch { return null; }
+        }).filter(Boolean);
         return ok({ entries: entries.slice(-limit).reverse() });
-      } catch (e) { return err(e.message); }
-    },
-  },
-];
+      } catch (e) { return safeErr(e); }
+    }
+  );
+}

@@ -8,44 +8,17 @@
 // Set MCP mode BEFORE any other imports that might write to stdout
 process.env.SNBATCH_MCP_MODE = '1';
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { tools } from './tools.js';
+import { registerTools } from './tools.js';
 
 export async function startMcpServer() {
-  const server = new Server(
+  const server = new McpServer(
     { name: 'snbatch', version: '0.1.0' },
     { capabilities: { tools: {} } }
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    })),
-  }));
-
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const tool = tools.find((t) => t.name === request.params.name);
-    if (!tool) {
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ error: `Unknown tool: ${request.params.name}` }) }],
-        isError: true,
-      };
-    }
-
-    try {
-      const parsed = tool.inputSchema.parse(request.params.arguments ?? {});
-      return await tool.handler(parsed);
-    } catch (e) {
-      return {
-        content: [{ type: 'text', text: JSON.stringify({ error: e.message }) }],
-        isError: true,
-      };
-    }
-  });
+  registerTools(server);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

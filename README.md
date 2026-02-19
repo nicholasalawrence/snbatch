@@ -125,7 +125,11 @@ snbatch serve --mcp
 **Credential resolution order:**
 1. `SNBATCH_INSTANCE`, `SNBATCH_USERNAME`, `SNBATCH_PASSWORD` environment variables (recommended for CI/CD)
 2. Encrypted profile file `~/.snbatch/profiles.json` (AES-256, convenience encryption for local dev)
-3. Interactive prompt (`--prompt-password`)
+3. Interactive prompt (only available when running in a TTY)
+
+**HTTPS enforcement:** HTTP URLs are rejected by default to prevent credentials from being sent in plaintext. Use `--allow-insecure-http` or set `SNBATCH_ALLOW_HTTP=1` to override (not recommended).
+
+**Profile encryption:** Profiles are encrypted with AES-256-GCM using a passphrase derived from a fixed app constant and your machine hostname. This provides at-rest protection against casual file reads but is **not** a substitute for a secrets manager. If an attacker has both file access and knowledge of the hostname, they can derive the key. For stronger security, set the `SNBATCH_KEYFILE` environment variable to the path of a file containing your preferred passphrase.
 
 **Config file:** `.snbatchrc` (project-local) or `~/.snbatch/config.json` (global)
 

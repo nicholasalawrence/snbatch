@@ -4,20 +4,35 @@
  */
 import { withRetry } from '../utils/retry.js';
 
+// P3-4: Validate sourceIds to prevent ServiceNow query injection
+const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
+
+function validateSourceIds(sourceIds) {
+  return sourceIds.filter((id) => {
+    if (!SAFE_ID_RE.test(id)) {
+      process.stderr.write(`[snbatch] Warning: skipping invalid sourceId: ${id}\n`);
+      return false;
+    }
+    return true;
+  });
+}
+
 /**
  * Fetch all installed store applications.
  * @param {import('axios').AxiosInstance} client
+ * @param {{ retries?: number, backoffBase?: number }} [retryOpts]
  * @returns {Promise<Array<{sysId, scope, name, version, sourceId, type: 'app'}>>}
  */
-export async function fetchInstalledApps(client) {
-  const resp = await withRetry(() =>
-    client.get('/api/now/table/sys_store_app', {
+export async function fetchInstalledApps(client, retryOpts = {}) {
+  const resp = await withRetry(
+    () => client.get('/api/now/table/sys_store_app', {
       params: {
         sysparm_fields: 'sys_id,scope,name,version,source',
         sysparm_limit: 1000,
         sysparm_query: 'active=true',
       },
-    })
+    }),
+    retryOpts
   );
 
   return (resp.data.result ?? []).map((r) => ({
@@ -34,21 +49,27 @@ export async function fetchInstalledApps(client) {
  * Fetch the latest available version for a list of source IDs.
  * @param {import('axios').AxiosInstance} client
  * @param {string[]} sourceIds
+ * @param {{ retries?: number, backoffBase?: number }} [retryOpts]
  * @returns {Promise<Map<string, string>>} sourceId → latest version string
  */
-export async function fetchAvailableVersions(client, sourceIds) {
+export async function fetchAvailableVersions(client, sourceIds, retryOpts = {}) {
   if (!sourceIds.length) return new Map();
 
-  const query = `sourceIN${sourceIds.join(',')}`;
-  const resp = await withRetry(() =>
-    client.get('/api/now/table/sys_app_version', {
+  // P3-4: Validate sourceIds before building query
+  const safeIds = validateSourceIds(sourceIds);
+  if (!safeIds.length) return new Map();
+
+  const query = `sourceIN${safeIds.join(',')}`;
+  const resp = await withRetry(
+    () => client.get('/api/now/table/sys_app_version', {
       params: {
         sysparm_fields: 'source,version',
         sysparm_limit: 5000,
         sysparm_query: query,
         sysparm_orderby: 'version^DESC',
       },
-    })
+    }),
+    retryOpts
   );
 
   const map = new Map();
@@ -64,17 +85,19 @@ export async function fetchAvailableVersions(client, sourceIds) {
 /**
  * Fetch installed plugins.
  * @param {import('axios').AxiosInstance} client
+ * @param {{ retries?: number, backoffBase?: number }} [retryOpts]
  * @returns {Promise<Array<{sysId, scope, name, version, type: 'plugin'}>>}
  */
-export async function fetchPlugins(client) {
-  const resp = await withRetry(() =>
-    client.get('/api/now/table/sys_plugins', {
+export async function fetchPlugins(client, retryOpts = {}) {
+  const resp = await withRetry(
+    () => client.get('/api/now/table/sys_plugins', {
       params: {
         sysparm_fields: 'sys_id,id,name,version',
         sysparm_limit: 1000,
         sysparm_query: 'active=true',
       },
-    })
+    }),
+    retryOpts
   );
 
   return (resp.data.result ?? []).map((r) => ({

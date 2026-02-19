@@ -6,8 +6,12 @@
  *
  * The encryption passphrase is derived from a fixed app constant + machine hostname,
  * providing at-rest protection without requiring a user-chosen passphrase.
+ *
+ * P3-8: Set SNBATCH_KEYFILE env var to use a file's contents as the passphrase instead.
+ * This provides stronger security when the threat model requires it.
  */
 import { readFile, writeFile, mkdir } from 'fs/promises';
+import { readFileSync } from 'fs';
 import { hostname } from 'os';
 import { dirname } from 'path';
 import { PROFILES_PATH, SNBATCH_DIR } from './paths.js';
@@ -16,6 +20,14 @@ import { encrypt, decrypt } from './crypto.js';
 const APP_KEY_SEED = 'snbatch-v1-profile-store';
 
 function getPassphrase() {
+  // P3-8: Support SNBATCH_KEYFILE env var as alternative passphrase source
+  if (process.env.SNBATCH_KEYFILE) {
+    try {
+      return readFileSync(process.env.SNBATCH_KEYFILE, 'utf8').trim();
+    } catch {
+      // Fall through to default
+    }
+  }
   return `${APP_KEY_SEED}:${hostname()}`;
 }
 
@@ -35,7 +47,7 @@ async function loadStore() {
 }
 
 async function saveStore(store) {
-  await mkdir(SNBATCH_DIR, { recursive: true });
+  await mkdir(SNBATCH_DIR, { recursive: true, mode: 0o700 });
   const payload = { encrypted: true, data: encrypt(JSON.stringify(store), getPassphrase()) };
   await writeFile(PROFILES_PATH, JSON.stringify(payload, null, 2), { mode: 0o600 });
 }

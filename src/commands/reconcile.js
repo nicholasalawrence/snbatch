@@ -5,20 +5,28 @@ import { Command } from 'commander';
 import { join } from 'path';
 import { resolveCredentials } from '../api/auth.js';
 import { createClient } from '../api/index.js';
-import { fetchInstalledApps, fetchAvailableVersions } from '../api/table.js';
+import { fetchInstalledApps, fetchAvailableVersions, fetchPlugins } from '../api/table.js';
 import { readManifest, buildManifest, writeManifest, defaultManifestName } from '../models/manifest.js';
 import { buildPackageObject } from '../models/package.js';
 import { compareVersions } from '../utils/version.js';
 import { printTable, printInfo, printError, printSuccess, printWarn, createSpinner, chalk } from '../utils/display.js';
 import { loadConfig } from '../utils/config.js';
 
-const ACTIONS = { INCLUDE: '✅ Include', SKIP_CURRENT: '⏭️ Already current', VERSION_MISMATCH: '⚠️ Version mismatch', NOT_INSTALLED: '❌ Not installed' };
+const ACTIONS = {
+  INCLUDE: '✅ Include',
+  SKIP_CURRENT: '⏭️ Already current',
+  VERSION_MISMATCH: '⚠️ Version mismatch',
+  NOT_INSTALLED: '❌ Not installed',
+  EXTRA: '➕ Extra on target',
+};
 
 /**
  * Core reconcile logic — pure function for testability.
+ * P2-6: Added 'extra_available' category for apps on target not in manifest.
  */
 export function reconcilePackages(manifestPackages, targetApps) {
   const targetMap = new Map(targetApps.map((a) => [a.scope, a]));
+  const manifestScopes = new Set(manifestPackages.map((p) => p.scope));
   const results = [];
 
   for (const pkg of manifestPackages) {
@@ -47,6 +55,22 @@ export function reconcilePackages(manifestPackages, targetApps) {
     }
   }
 
+  // P2-6: Report apps/plugins on target that are NOT in the source manifest
+  for (const [scope, target] of targetMap) {
+    if (!manifestScopes.has(scope)) {
+      results.push({
+        scope,
+        name: target.name,
+        currentVersion: target.version,
+        targetVersion: target.version,
+        targetCurrentVersion: target.version,
+        action: 'extra',
+        reason: 'extra_available',
+        packageType: target.type ?? 'app',
+      });
+    }
+  }
+
   return results;
 }
 
@@ -70,27 +94,36 @@ export function reconcileCommand() {
         const spinner = createSpinner(`Scanning target: ${creds.instanceHost}...`);
         spinner.start();
 
-        const targetApps = await fetchInstalledApps(client);
+        // P2-5: Include plugins in target scan
+        const [targetApps, targetPlugins] = await Promise.all([
+          fetchInstalledApps(client),
+          fetchPlugins(client),
+        ]);
+        const allTarget = [...targetApps, ...targetPlugins];
         spinner.succeed(`Scanned ${creds.instanceHost}`);
 
-        const reconciled = reconcilePackages(sourceManifest.packages, targetApps);
+        const reconciled = reconcilePackages(sourceManifest.packages, allTarget);
 
         // Display diff table
         printTable(
           ['Scope', 'Source Target', 'Target Current', 'Action'],
           reconciled.map((r) => {
-            const action = r.action === 'include'
-              ? (r.reason === 'version_mismatch' ? ACTIONS.VERSION_MISMATCH : ACTIONS.INCLUDE)
-              : r.reason === 'not_installed' ? ACTIONS.NOT_INSTALLED : ACTIONS.SKIP_CURRENT;
+            let action;
+            if (r.action === 'extra') action = ACTIONS.EXTRA;
+            else if (r.action === 'include') action = r.reason === 'version_mismatch' ? ACTIONS.VERSION_MISMATCH : ACTIONS.INCLUDE;
+            else if (r.reason === 'not_installed') action = ACTIONS.NOT_INSTALLED;
+            else action = ACTIONS.SKIP_CURRENT;
             return [r.scope, r.targetVersion, r.targetCurrentVersion ?? '—', action];
           })
         );
 
         const toInstall = reconciled.filter((r) => r.action === 'include');
         const skipped = reconciled.filter((r) => r.action === 'skip');
+        const extras = reconciled.filter((r) => r.action === 'extra');
         const mismatches = reconciled.filter((r) => r.reason === 'version_mismatch');
 
         printInfo(`${toInstall.length} to install, ${skipped.length} skipped`);
+        if (extras.length) printInfo(`${extras.length} extra app(s)/plugin(s) on target not in source manifest`);
         if (mismatches.length) printWarn(`${mismatches.length} package(s) have version mismatches — review before proceeding`);
 
         if (!toInstall.length) {

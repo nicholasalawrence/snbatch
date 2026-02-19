@@ -3,6 +3,7 @@
  */
 import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
+import { homedir } from 'os';
 import { CONFIG_PATH } from './paths.js';
 
 const DEFAULTS = {
@@ -24,7 +25,9 @@ async function readJson(filePath) {
   }
 }
 
+// P3-5: Stop walk-up at user's home directory — don't traverse above it
 async function findSnbatchrc(startDir) {
+  const home = homedir();
   let dir = startDir;
   while (true) {
     const candidate = join(dir, '.snbatchrc');
@@ -32,6 +35,8 @@ async function findSnbatchrc(startDir) {
     if (data) return data;
     const parent = dirname(dir);
     if (parent === dir) return null;
+    // Don't traverse above home directory
+    if (dir === home) return null;
     dir = parent;
   }
 }
@@ -64,10 +69,10 @@ export async function loadConfig(cliOverrides = {}) {
     if (v !== undefined && v !== null) merged[k] = v;
   }
 
-  // excludeAlways: merge arrays from global + project + cli
+  // P1-1: Fix exclude key — read from cliOverrides.excludeAlways (matching what callers pass)
   const globalExclude = globalConfig?.exclude_always ?? [];
   const projectExclude = projectRc?.exclude_always ?? [];
-  const cliExclude = cliOverrides?.exclude ?? [];
+  const cliExclude = cliOverrides?.excludeAlways ?? [];
   merged.excludeAlways = [...new Set([...globalExclude, ...projectExclude, ...cliExclude])];
 
   return Object.freeze(merged);
