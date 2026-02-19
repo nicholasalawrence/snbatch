@@ -1,0 +1,35 @@
+{
+  "name": "snbatch",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Batch-update ServiceNow store applications across multiple instances",
+  "keywords": ["servicenow", "cicd", "cli", "batch", "mcp"],
+  "license": "MIT",
+  "bin": {
+    "snbatch": "./bin/snbatch.js"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "start": "node bin/snbatch.js",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "test:live": "SNBATCH_LIVE=1 vitest run test/live"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "axios": "^1.13.5",
+    "chalk": "^5.6.2",
+    "cli-table3": "^0.6.5",
+    "commander": "^14.0.3",
+    "inquirer": "^13.2.5",
+    "ora": "^9.3.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^4.0.18",
+    "vitest": "^4.0.18"
+  }
+}
