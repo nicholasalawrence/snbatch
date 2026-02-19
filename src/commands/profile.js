@@ -14,15 +14,20 @@ export function profileCommand() {
     .description('Add or update a profile')
     .option('--instance <url>', 'Instance URL')
     .option('--username <user>', 'Username')
-    .option('--password <pass>', 'Password (prefer interactive prompt)')
+    .option('--prompt-password', 'Prompt for password (recommended over --password)')
+    .option('--password <pass>', 'Password (UNSAFE: visible in shell history and process list — use --prompt-password instead)')
     .action(async (name, opts) => {
       try {
         let { instance, username, password } = opts;
 
+        if (password) {
+          process.stderr.write('⚠️  WARNING: --password passes credentials via command-line arguments, which are visible in shell history and process listings. Use --prompt-password or interactive mode instead.\n');
+        }
+
         const questions = [];
         if (!instance) questions.push({ type: 'input', name: 'instance', message: 'Instance URL:', validate: (v) => v ? true : 'Required' });
         if (!username) questions.push({ type: 'input', name: 'username', message: 'Username:', validate: (v) => v ? true : 'Required' });
-        if (!password) questions.push({ type: 'password', name: 'password', message: 'Password:', mask: '*', validate: (v) => v ? true : 'Required' });
+        if (!password || opts.promptPassword) questions.push({ type: 'password', name: 'password', message: 'Password:', mask: '*', validate: (v) => v ? true : 'Required' });
 
         if (questions.length) {
           const answers = await inquirer.prompt(questions);

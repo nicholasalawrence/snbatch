@@ -21,6 +21,7 @@ import { loadConfig } from '../utils/config.js';
 import { issueConfirmationChallenge, verifyConfirmation, installNeedsConfirmation } from './confirmations.js';
 import { HISTORY_PATH, SNBATCH_DIR } from '../utils/paths.js';
 import { appendFile, mkdir, readFile } from 'fs/promises';
+import { realpathSync, existsSync } from 'fs';
 import { hashRollbackToken } from '../utils/crypto.js';
 
 function ok(data) {
@@ -42,11 +43,18 @@ async function appendHistory(entry) {
   await appendFile(HISTORY_PATH, JSON.stringify(entry) + '\n', { mode: 0o600 });
 }
 
-// P2-9: Validate that a file path is within cwd — reject absolute paths and .. traversal
+// P2-9: Validate that a file path is within cwd — reject traversal and symlinks
 function validatePath(filePath) {
   const resolved = path.resolve(process.cwd(), filePath);
   if (!resolved.startsWith(process.cwd() + path.sep) && resolved !== process.cwd()) {
     throw new Error('Path must be within the current working directory');
+  }
+  // If the path already exists, resolve symlinks and re-check
+  if (existsSync(resolved)) {
+    const real = realpathSync(resolved);
+    if (!real.startsWith(process.cwd() + path.sep) && real !== process.cwd()) {
+      throw new Error('Path resolves via symlink to outside the current working directory');
+    }
   }
   return resolved;
 }
@@ -162,7 +170,8 @@ export function registerTools(server) {
           rollbackTokenHint: tokenHint,
         });
 
-        return ok({ status: 'complete', progressId, rollbackToken, packages: packages.length, lastResult: lastData });
+        // P1: Return only the hint, not the full token — MCP transcripts may be logged
+        return ok({ status: 'complete', progressId, rollbackTokenHint: tokenHint ? `...${tokenHint}` : null, packages: packages.length, lastResult: lastData });
       } catch (e) { return safeErr(e); }
     }
   );
