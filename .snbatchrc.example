@@ -1,0 +1,12 @@
+{
+  "defaults": {
+    "format": "table",
+    "type": "all",
+    "poll_interval": 10,
+    "retries": 3
+  },
+  "exclude_always": [
+    "sn_devstudio",
+    "sn_atf"
+  ]
+}
