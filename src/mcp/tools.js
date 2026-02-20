@@ -10,7 +10,7 @@ import { z } from 'zod';
 import path from 'path';
 import { resolveCredentials } from '../api/auth.js';
 import { createClient } from '../api/index.js';
-import { startBatchInstall, startBatchRollback, pollProgress } from '../api/cicd.js';
+import { startBatchInstall, startBatchRollback, pollProgress, fetchBatchResults } from '../api/cicd.js';
 import { fetchInstalledApps } from '../api/table.js';
 import { toInstallPayload } from '../models/package.js';
 import { buildManifest, readManifest, writeManifest, defaultManifestName } from '../models/manifest.js';
@@ -144,7 +144,7 @@ export function registerTools(server) {
 
         const client = createClient(creds);
         const payloads = packages.map(toInstallPayload);
-        const { progressId, rollbackToken } = await startBatchInstall(client, payloads);
+        const { progressId, rollbackToken, resultsId } = await startBatchInstall(client, payloads);
 
         let lastData = null;
         for await (const data of pollProgress(client, progressId, {
@@ -152,9 +152,29 @@ export function registerTools(server) {
           maxPollDuration: config.maxPollDuration,
         })) { lastData = data; }
 
+        // Fetch per-package results from the dedicated results endpoint
+        let batchResults = [];
+        if (resultsId) {
+          try {
+            batchResults = await fetchBatchResults(client, resultsId);
+          } catch { /* fall through to progress data */ }
+        }
+        if (!batchResults.length) {
+          batchResults = lastData?.packages ?? lastData?.result?.packages ?? [];
+        }
+
+        let succeeded = 0;
+        let failed = 0;
+        for (const r of batchResults) {
+          const s = (r.status ?? r.state ?? '').toLowerCase();
+          if (s === 'success' || s === 'complete') succeeded++;
+          else failed++;
+        }
+
         // P1-5: hash rollback token for history storage
         const tokenHash = rollbackToken ? hashRollbackToken(rollbackToken) : null;
         const tokenHint = rollbackToken ? rollbackToken.slice(-4) : null;
+        const resultStatus = failed === 0 ? 'success' : succeeded === 0 ? 'failed' : 'partial';
 
         await appendHistory({
           id: crypto.randomUUID(),
@@ -164,14 +184,14 @@ export function registerTools(server) {
           profile: profile ?? null,
           action: 'install',
           packages: packages.map((p) => ({ scope: p.scope, from: p.currentVersion, to: p.targetVersion })),
-          result: 'success',
+          result: resultStatus,
           progressId,
           rollbackTokenHash: tokenHash,
           rollbackTokenHint: tokenHint,
         });
 
         // P1: Return only the hint, not the full token — MCP transcripts may be logged
-        return ok({ status: 'complete', progressId, rollbackTokenHint: tokenHint ? `...${tokenHint}` : null, packages: packages.length, lastResult: lastData });
+        return ok({ status: 'complete', result: resultStatus, progressId, rollbackTokenHint: tokenHint ? `...${tokenHint}` : null, succeeded, failed, packages: packages.length, batchResults });
       } catch (e) { return safeErr(e); }
     }
   );

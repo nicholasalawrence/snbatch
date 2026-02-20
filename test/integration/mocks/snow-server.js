@@ -20,18 +20,22 @@ export const MOCK_BATCH_RESULT = {
     links: {
       progress: { id: 'progress-abc-123' },
       rollback: { id: 'rollback-token-xyz' },
+      results: { id: 'results-batch-789' },
     },
   },
+};
+
+export const MOCK_BATCH_RESULTS = {
+  result: [
+    { id: 'app001', name: 'ITSM Core', scope: 'x_snc_itsm', version: '3.2.4', status: 'success' },
+    { id: 'app002', name: 'HR Service Delivery', scope: 'x_snc_hr', version: '4.2.1', status: 'success' },
+  ],
 };
 
 export const MOCK_PROGRESS_COMPLETE = {
   result: {
     percentComplete: 100,
     status: 'complete',
-    packages: [
-      { id: 'app001', name: 'ITSM Core', status: 'success' },
-      { id: 'app002', name: 'HR Service Delivery', status: 'success' },
-    ],
   },
 };
 
@@ -121,6 +125,11 @@ export async function createMockServer(opts = {}) {
 
     if (path === '/api/sn_cicd/app/batch/rollback' && req.method === 'POST') {
       return jsonResponse(res, 200, { result: { links: { progress: { id: 'rollback-progress-456' } } } });
+    }
+
+    if (path.startsWith('/api/sn_cicd/app/batch/results/')) {
+      const batchResults = opts.batchResults ?? MOCK_BATCH_RESULTS;
+      return jsonResponse(res, 200, batchResults);
     }
 
     if (path.startsWith('/api/sn_cicd/progress/')) {

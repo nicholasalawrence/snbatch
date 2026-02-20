@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createMockServer } from './mocks/snow-server.js';
 import { createClient } from '../../src/api/index.js';
 import { fetchInstalledApps, fetchUpdatableApps } from '../../src/api/table.js';
-import { startBatchInstall, pollProgress } from '../../src/api/cicd.js';
+import { startBatchInstall, pollProgress, fetchBatchResults } from '../../src/api/cicd.js';
 import { buildPackageObject } from '../../src/models/package.js';
 import { buildManifest, computeStats } from '../../src/models/manifest.js';
 import { isUpgrade } from '../../src/utils/version.js';
@@ -71,21 +71,28 @@ describe('manifest generation', () => {
   });
 });
 
-describe('batch install + poll', () => {
-  it('starts a batch and polls to completion', async () => {
-    const { progressId, rollbackToken } = await startBatchInstall(client, [
+describe('batch install + poll + results', () => {
+  it('starts a batch, polls to completion, and fetches results', async () => {
+    const { progressId, rollbackToken, resultsId } = await startBatchInstall(client, [
       { id: 'app001', version: '3.2.4', type: 'application' },
     ]);
     expect(progressId).toBe('progress-abc-123');
     expect(rollbackToken).toBe('rollback-token-xyz');
+    expect(resultsId).toBe('results-batch-789');
 
-    const results = [];
+    const progressData = [];
     for await (const data of pollProgress(client, progressId, { pollInterval: 50, maxPollDuration: 10_000 })) {
-      results.push(data);
+      progressData.push(data);
     }
 
-    const last = results[results.length - 1];
+    const last = progressData[progressData.length - 1];
     expect(last.percentComplete).toBe(100);
+
+    // Fetch per-package results from the dedicated results endpoint
+    const results = await fetchBatchResults(client, resultsId);
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({ id: 'app001', name: 'ITSM Core', status: 'success' });
+    expect(results[1]).toMatchObject({ id: 'app002', name: 'HR Service Delivery', status: 'success' });
   });
 });
 

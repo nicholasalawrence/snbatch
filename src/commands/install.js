@@ -6,7 +6,7 @@ import { appendFile, mkdir } from 'fs/promises';
 import inquirer from 'inquirer';
 import { resolveCredentials } from '../api/auth.js';
 import { createClient } from '../api/index.js';
-import { startBatchInstall, pollProgress } from '../api/cicd.js';
+import { startBatchInstall, pollProgress, fetchBatchResults } from '../api/cicd.js';
 import { readManifest } from '../models/manifest.js';
 import { toInstallPayload } from '../models/package.js';
 import { scanData } from './scan.js';
@@ -76,6 +76,7 @@ export function installCommand() {
     .option('--profile <name>', 'Target profile')
     .option('--poll-interval <seconds>', 'Poll interval in seconds', '10')
     .option('--allow-insecure-http', 'Allow HTTP connections (credentials sent in plaintext)')
+    .option('--debug', 'Log raw API responses for diagnostics')
     // P2-12: --resume removed — planned for v1.1
     .action(async (opts) => {
       const config = await loadConfig({
@@ -135,12 +136,18 @@ export function installCommand() {
 
         await confirmInstall(packages, creds.instanceHost, opts.yes ?? false);
 
+        const debug = opts.debug ?? false;
         const payloads = packages.map(toInstallPayload);
         const spinner = createSpinner(`Starting batch install of ${packages.length} package(s)...`);
         spinner.start();
 
-        const { progressId, rollbackToken } = await startBatchInstall(client, payloads, retryOpts);
-        logger.info('Batch install started', { progressId, rollbackToken, packages: packages.map((p) => p.scope) });
+        const { progressId, rollbackToken, resultsId } = await startBatchInstall(client, payloads, retryOpts);
+        logger.info('Batch install started', { progressId, rollbackToken, resultsId, packages: packages.map((p) => p.scope) });
+        if (debug) {
+          spinner.stop();
+          printInfo(`[debug] Submission response: progressId=${progressId}, rollbackToken=${rollbackToken}, resultsId=${resultsId}`);
+          spinner.start();
+        }
 
         let lastData = null;
         let succeeded = 0;
@@ -154,13 +161,41 @@ export function installCommand() {
         })) {
           lastData = data;
           const pct = data.percentComplete ?? data.percent_complete ?? 0;
-          spinner.text = `[${Math.round(pct)}%] Installing...`;
+          const statusVal = (data.status ?? data.state ?? '').toLowerCase();
+          spinner.text = `[${Math.round(pct)}%] Installing... (${statusVal})`;
+          if (debug) {
+            spinner.stop();
+            printInfo(`[debug] Poll: ${JSON.stringify(data)}`);
+            spinner.start();
+          }
         }
 
         spinner.stop();
 
-        // Parse final results
-        const results = lastData?.packages ?? lastData?.result?.packages ?? [];
+        // Fetch per-package results from the dedicated results endpoint
+        let results = [];
+        if (resultsId) {
+          try {
+            results = await fetchBatchResults(client, resultsId, retryOpts);
+            if (debug) {
+              printInfo(`[debug] Batch results: ${JSON.stringify(results)}`);
+            }
+          } catch (e) {
+            logger.warn('Failed to fetch batch results', { resultsId, error: e.message });
+            if (debug) printWarn(`[debug] Failed to fetch batch results: ${e.message}`);
+          }
+        } else if (debug) {
+          printWarn('[debug] No resultsId in submission response — cannot fetch per-package results');
+        }
+
+        // Fallback: if results endpoint returned nothing, try progress data
+        if (!results.length) {
+          results = lastData?.packages ?? lastData?.result?.packages ?? [];
+          if (debug && results.length) {
+            printInfo('[debug] Using package results from progress endpoint (fallback)');
+          }
+        }
+
         for (const r of results) {
           const status = (r.status ?? r.state ?? '').toLowerCase();
           if (status === 'success' || status === 'complete') succeeded++;
