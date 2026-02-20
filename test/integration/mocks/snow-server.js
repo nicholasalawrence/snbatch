@@ -5,15 +5,14 @@
 import { createServer } from 'http';
 
 export const MOCK_APPS = [
-  { sys_id: 'app001', scope: 'x_snc_itsm', name: 'ITSM Core', version: '3.2.1', source: { value: 'src001' }, active: 'true' },
-  { sys_id: 'app002', scope: 'x_snc_hr',   name: 'HR Service Delivery', version: '4.1.0', source: { value: 'src002' }, active: 'true' },
-  { sys_id: 'app003', scope: 'x_snc_sec',  name: 'Security Operations', version: '2.0.3', source: { value: 'src003' }, active: 'true' },
+  { sys_id: 'app001', scope: 'x_snc_itsm', name: 'ITSM Core', version: '3.2.1', latest_version: '3.2.4', update_available: 'true', active: 'true' },
+  { sys_id: 'app002', scope: 'x_snc_hr',   name: 'HR Service Delivery', version: '4.1.0', latest_version: '4.2.1', update_available: 'true', active: 'true' },
+  { sys_id: 'app003', scope: 'x_snc_sec',  name: 'Security Operations', version: '2.0.3', latest_version: '3.0.0', update_available: 'true', active: 'true' },
 ];
 
-export const MOCK_VERSIONS = [
-  { source: { value: 'src001' }, version: '3.2.4' },
-  { source: { value: 'src002' }, version: '4.2.1' },
-  { source: { value: 'src003' }, version: '3.0.0' },
+// Apps that are already current (no update available)
+export const MOCK_APPS_CURRENT = [
+  { sys_id: 'app004', scope: 'x_snc_csm', name: 'Customer Service', version: '1.5.0', latest_version: '1.5.0', update_available: 'false', active: 'true' },
 ];
 
 export const MOCK_BATCH_RESULT = {
@@ -51,17 +50,15 @@ export async function createMockServer(opts = {}) {
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const path = url.pathname;
+    const query = url.searchParams.get('sysparm_query') ?? '';
 
     if (path === '/api/now/table/sys_store_app') {
-      return jsonResponse(res, 200, { result: MOCK_APPS });
-    }
-
-    if (path === '/api/now/table/sys_app_version') {
-      return jsonResponse(res, 200, { result: MOCK_VERSIONS });
-    }
-
-    if (path === '/api/now/table/sys_plugins') {
-      return jsonResponse(res, 200, { result: [] });
+      // If query filters for update_available=true, return only updatable apps
+      if (query.includes('update_available=true')) {
+        return jsonResponse(res, 200, { result: MOCK_APPS });
+      }
+      // Otherwise return all apps (updatable + current)
+      return jsonResponse(res, 200, { result: [...MOCK_APPS, ...MOCK_APPS_CURRENT] });
     }
 
     if (path === '/api/now/table/sys_properties') {

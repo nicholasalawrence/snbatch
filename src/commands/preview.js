@@ -33,11 +33,9 @@ export function previewCommand() {
     .option('--major', 'Include all updates (including major)')
     .option('--all', 'Include all updates')
     .option('--exclude <scopes>', 'Comma-separated scopes to exclude')
-    .option('--type <type>', 'Filter by type: app|plugin|all', 'all')
     .option('--json', 'Output manifest JSON to stdout')
     .action(async (opts) => {
       const config = await loadConfig({
-        type: opts.type,
         excludeAlways: opts.exclude ? opts.exclude.split(',') : [],
       });
 

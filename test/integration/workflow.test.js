@@ -4,7 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createMockServer } from './mocks/snow-server.js';
 import { createClient } from '../../src/api/index.js';
-import { fetchInstalledApps, fetchAvailableVersions } from '../../src/api/table.js';
+import { fetchInstalledApps, fetchUpdatableApps } from '../../src/api/table.js';
 import { startBatchInstall, pollProgress } from '../../src/api/cicd.js';
 import { buildPackageObject } from '../../src/models/package.js';
 import { buildManifest, computeStats } from '../../src/models/manifest.js';
@@ -23,26 +23,31 @@ afterEach(async () => {
 });
 
 describe('scan workflow', () => {
-  it('fetches installed apps and available versions', async () => {
+  it('fetches all installed apps including current ones', async () => {
     const apps = await fetchInstalledApps(client);
-    expect(apps).toHaveLength(3);
+    expect(apps).toHaveLength(4); // 3 updatable + 1 current
     expect(apps[0]).toMatchObject({ scope: 'x_snc_itsm', version: '3.2.1', type: 'app' });
   });
 
-  it('maps available versions correctly', async () => {
-    const apps = await fetchInstalledApps(client);
-    const sourceIds = apps.map((a) => a.sourceId);
-    const versionMap = await fetchAvailableVersions(client, sourceIds);
-    expect(versionMap.get('src001')).toBe('3.2.4');
-    expect(versionMap.get('src002')).toBe('4.2.1');
-    expect(versionMap.get('src003')).toBe('3.0.0');
+  it('fetches only updatable apps', async () => {
+    const apps = await fetchUpdatableApps(client);
+    expect(apps).toHaveLength(3);
+    expect(apps.every((a) => a.updateAvailable)).toBe(true);
+  });
+
+  it('maps latest versions directly from sys_store_app', async () => {
+    const apps = await fetchUpdatableApps(client);
+    const itsm = apps.find((a) => a.scope === 'x_snc_itsm');
+    expect(itsm.latestVersion).toBe('3.2.4');
+    const hr = apps.find((a) => a.scope === 'x_snc_hr');
+    expect(hr.latestVersion).toBe('4.2.1');
+    const sec = apps.find((a) => a.scope === 'x_snc_sec');
+    expect(sec.latestVersion).toBe('3.0.0');
   });
 
   it('identifies upgrades correctly', async () => {
-    const apps = await fetchInstalledApps(client);
-    const sourceIds = apps.map((a) => a.sourceId);
-    const versionMap = await fetchAvailableVersions(client, sourceIds);
-    const packages = apps.map((a) => buildPackageObject(a, versionMap.get(a.sourceId)));
+    const apps = await fetchUpdatableApps(client);
+    const packages = apps.map((a) => buildPackageObject(a, a.latestVersion));
     const upgrades = packages.filter((p) => isUpgrade(p.currentVersion, p.targetVersion));
     expect(upgrades).toHaveLength(3);
     expect(upgrades.find((p) => p.scope === 'x_snc_itsm')?.upgradeType).toBe('patch');
@@ -53,10 +58,8 @@ describe('scan workflow', () => {
 
 describe('manifest generation', () => {
   it('builds a deterministic manifest', async () => {
-    const apps = await fetchInstalledApps(client);
-    const sourceIds = apps.map((a) => a.sourceId);
-    const versionMap = await fetchAvailableVersions(client, sourceIds);
-    const packages = apps.map((a) => buildPackageObject(a, versionMap.get(a.sourceId)));
+    const apps = await fetchUpdatableApps(client);
+    const packages = apps.map((a) => buildPackageObject(a, a.latestVersion));
     const upgrades = packages.filter((p) => isUpgrade(p.currentVersion, p.targetVersion));
 
     const manifest = buildManifest(upgrades, mock.baseUrl, 'test');

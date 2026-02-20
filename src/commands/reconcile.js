@@ -5,7 +5,7 @@ import { Command } from 'commander';
 import { join } from 'path';
 import { resolveCredentials } from '../api/auth.js';
 import { createClient } from '../api/index.js';
-import { fetchInstalledApps, fetchAvailableVersions, fetchPlugins } from '../api/table.js';
+import { fetchInstalledApps } from '../api/table.js';
 import { readManifest, buildManifest, writeManifest, defaultManifestName } from '../models/manifest.js';
 import { buildPackageObject } from '../models/package.js';
 import { compareVersions } from '../utils/version.js';
@@ -94,15 +94,10 @@ export function reconcileCommand() {
         const spinner = createSpinner(`Scanning target: ${creds.instanceHost}...`);
         spinner.start();
 
-        // P2-5: Include plugins in target scan
-        const [targetApps, targetPlugins] = await Promise.all([
-          fetchInstalledApps(client),
-          fetchPlugins(client),
-        ]);
-        const allTarget = [...targetApps, ...targetPlugins];
+        const targetApps = await fetchInstalledApps(client);
         spinner.succeed(`Scanned ${creds.instanceHost}`);
 
-        const reconciled = reconcilePackages(sourceManifest.packages, allTarget);
+        const reconciled = reconcilePackages(sourceManifest.packages, targetApps);
 
         // Display diff table
         printTable(

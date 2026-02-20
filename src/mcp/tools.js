@@ -11,7 +11,7 @@ import path from 'path';
 import { resolveCredentials } from '../api/auth.js';
 import { createClient } from '../api/index.js';
 import { startBatchInstall, startBatchRollback, pollProgress } from '../api/cicd.js';
-import { fetchInstalledApps, fetchPlugins } from '../api/table.js';
+import { fetchInstalledApps } from '../api/table.js';
 import { toInstallPayload } from '../models/package.js';
 import { buildManifest, readManifest, writeManifest, defaultManifestName } from '../models/manifest.js';
 import { reconcilePackages } from '../commands/reconcile.js';
@@ -66,14 +66,13 @@ function validatePath(filePath) {
 export function registerTools(server) {
   server.tool(
     'snbatch_scan',
-    'Scan a ServiceNow instance for available application and plugin updates.',
+    'Scan a ServiceNow instance for available store app updates.',
     {
       profile: z.string().optional().describe('Profile name to use'),
-      type: z.enum(['app', 'plugin', 'all']).optional().default('all'),
     },
-    async ({ profile, type }) => {
+    async ({ profile }) => {
       try {
-        const config = await loadConfig({ type });
+        const config = await loadConfig({});
         const { upgrades, creds, instanceVersion } = await scanData(profile, config);
         return ok({ instance: creds.instanceHost, instanceVersion, count: upgrades.length, packages: upgrades });
       } catch (e) { return safeErr(e); }
@@ -239,13 +238,8 @@ export function registerTools(server) {
         const sourceManifest = await readManifest(safePath);
         const creds = await resolveCredentials(targetProfile);
         const client = createClient(creds);
-        // P2-5: include plugins in target scan
-        const [targetApps, targetPlugins] = await Promise.all([
-          fetchInstalledApps(client),
-          fetchPlugins(client),
-        ]);
-        const allTarget = [...targetApps, ...targetPlugins];
-        const reconciled = reconcilePackages(sourceManifest.packages, allTarget);
+        const targetApps = await fetchInstalledApps(client);
+        const reconciled = reconcilePackages(sourceManifest.packages, targetApps);
         const toInstall = reconciled.filter((r) => r.action === 'include');
         const adjusted = buildManifest(toInstall, creds.baseUrl, targetProfile);
         const outPath = output ? validatePath(output) : path.join(process.cwd(), defaultManifestName(creds.instanceHost));
