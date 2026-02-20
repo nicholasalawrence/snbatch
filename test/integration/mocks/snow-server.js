@@ -65,6 +65,36 @@ export async function createMockServer(opts = {}) {
       return jsonResponse(res, 200, { result: [{ value: 'Yokohama Patch 3' }] });
     }
 
+    if (path === '/api/now/table/sys_plugins') {
+      const pluginId = query.match(/id=([^\^]+)/)?.[1];
+      const plugins = opts.plugins ?? {
+        'com.sn_cicd_spoke': { id: 'com.sn_cicd_spoke', active: 'true' },
+        'com.glide.continuousdelivery': { id: 'com.glide.continuousdelivery', active: 'true' },
+      };
+      const match = pluginId ? plugins[pluginId] : null;
+      return jsonResponse(res, 200, { result: match ? [match] : [] });
+    }
+
+    if (path === '/api/now/table/sys_user_has_role') {
+      const hasRole = opts.missingRole ? [] : [{ role: 'role_sys_id' }];
+      return jsonResponse(res, 200, { result: hasRole });
+    }
+
+    if (path === '/api/now/table/sys_db_object') {
+      const tableName = query.match(/name=([^\^]+)/)?.[1];
+      const wsDisabled = opts.wsDisabled ?? [];
+      const wsAccess = wsDisabled.includes(tableName) ? 'false' : 'true';
+      return jsonResponse(res, 200, { result: [{ sys_id: `dbobj_${tableName}`, name: tableName, ws_access: wsAccess }] });
+    }
+
+    if (path === '/api/now/table/sys_user_role') {
+      return jsonResponse(res, 200, { result: [{ sys_id: 'role_cicd_123' }] });
+    }
+
+    if (path === '/api/now/table/sys_user') {
+      return jsonResponse(res, 200, { result: [{ sys_id: 'user_admin_456' }] });
+    }
+
     if (path === '/api/sn_cicd/app/batch/install' && req.method === 'POST') {
       callCount.batchInstall++;
       // Simulate 503 on first call if configured

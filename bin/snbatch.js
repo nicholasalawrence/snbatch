@@ -15,6 +15,7 @@ import { installCommand } from '../src/commands/install.js';
 import { rollbackCommand } from '../src/commands/rollback.js';
 import { reconcileCommand } from '../src/commands/reconcile.js';
 import { profileCommand } from '../src/commands/profile.js';
+import { doctorCommand } from '../src/commands/doctor.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(await readFile(join(__dirname, '../package.json'), 'utf8'));
@@ -33,6 +34,7 @@ program.addCommand(installCommand());
 program.addCommand(rollbackCommand());
 program.addCommand(reconcileCommand());
 program.addCommand(profileCommand());
+program.addCommand(doctorCommand());
 
 program
   .command('serve')

@@ -16,6 +16,7 @@ import { toInstallPayload } from '../models/package.js';
 import { buildManifest, readManifest, writeManifest, defaultManifestName } from '../models/manifest.js';
 import { reconcilePackages } from '../commands/reconcile.js';
 import { scanData } from '../commands/scan.js';
+import { runDoctorChecks } from '../commands/doctor.js';
 import { listProfiles } from '../utils/profiles.js';
 import { loadConfig } from '../utils/config.js';
 import { issueConfirmationChallenge, verifyConfirmation, installNeedsConfirmation } from './confirmations.js';
@@ -274,6 +275,24 @@ export function registerTools(server) {
           try { return JSON.parse(l); } catch { return null; }
         }).filter(Boolean);
         return ok({ entries: entries.slice(-limit).reverse() });
+      } catch (e) { return safeErr(e); }
+    }
+  );
+
+  server.tool(
+    'snbatch_doctor',
+    'Check instance prerequisites (connectivity, auth, CI/CD plugins, roles, web service access, available updates). Run this before scan or install to diagnose issues.',
+    {
+      profile: z.string().optional().describe('Profile name to use'),
+    },
+    async ({ profile }) => {
+      try {
+        const creds = await resolveCredentials(profile);
+        const client = createClient(creds);
+        const results = await runDoctorChecks(client, creds);
+        const checks = results.map(({ fixFn, ...r }) => r);
+        const issues = checks.filter((r) => !r.pass);
+        return ok({ instance: creds.instanceHost, checks, issues: issues.length });
       } catch (e) { return safeErr(e); }
     }
   );
