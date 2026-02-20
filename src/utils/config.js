@@ -10,6 +10,7 @@ const DEFAULTS = {
   format: 'table',
   type: 'all',
   pollInterval: 10_000,
+  sequentialPollInterval: 5_000,
   maxPollDuration: 7_200_000,
   retries: 3,
   backoffBase: 2_000,

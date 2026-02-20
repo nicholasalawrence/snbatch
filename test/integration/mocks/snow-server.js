@@ -49,7 +49,7 @@ function jsonResponse(res, statusCode, body) {
  * @returns {{ server: http.Server, baseUrl: string, close: () => Promise<void> }}
  */
 export async function createMockServer(opts = {}) {
-  let callCount = { batchInstall: 0, progress: 0 };
+  let callCount = { batchInstall: 0, appInstall: 0, appRollback: 0, progress: 0 };
 
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -81,6 +81,11 @@ export async function createMockServer(opts = {}) {
     }
 
     if (path === '/api/now/table/sys_properties') {
+      // Check for specific property queries
+      if (query.includes('sn_cicd.apprepo.install.enabled')) {
+        const enabled = opts.appRepoInstallEnabled ?? true;
+        return jsonResponse(res, 200, { result: [{ value: enabled ? 'true' : 'false' }] });
+      }
       return jsonResponse(res, 200, { result: [{ value: 'Yokohama Patch 3' }] });
     }
 
@@ -114,6 +119,43 @@ export async function createMockServer(opts = {}) {
       return jsonResponse(res, 200, { result: [{ sys_id: 'user_admin_456' }] });
     }
 
+    // ── Single-app install (app_repo) ──
+    if (path === '/api/sn_cicd/app_repo/install' && req.method === 'POST') {
+      callCount.appInstall++;
+      const scope = url.searchParams.get('scope');
+      const version = url.searchParams.get('version');
+
+      // Simulate failure for specific scopes
+      const failScopes = opts.failScopes ?? [];
+      if (failScopes.includes(scope)) {
+        return jsonResponse(res, 200, {
+          result: {
+            links: { progress: { id: `progress-fail-${scope}` } },
+            rollback_version: null,
+          },
+        });
+      }
+
+      return jsonResponse(res, 200, {
+        result: {
+          links: { progress: { id: `progress-${scope}-${version}` } },
+          rollback_version: opts.rollbackVersionMap?.[scope] ?? `${scope}-prev`,
+        },
+      });
+    }
+
+    // ── Single-app rollback (app_repo) ──
+    if (path === '/api/sn_cicd/app_repo/rollback' && req.method === 'POST') {
+      callCount.appRollback++;
+      const scope = url.searchParams.get('scope');
+      return jsonResponse(res, 200, {
+        result: {
+          links: { progress: { id: `rollback-progress-${scope}` } },
+        },
+      });
+    }
+
+    // ── Batch install ──
     if (path === '/api/sn_cicd/app/batch/install' && req.method === 'POST') {
       callCount.batchInstall++;
       // Simulate 503 on first call if configured
@@ -123,18 +165,46 @@ export async function createMockServer(opts = {}) {
       return jsonResponse(res, 200, MOCK_BATCH_RESULT);
     }
 
+    // ── Batch rollback ──
     if (path === '/api/sn_cicd/app/batch/rollback' && req.method === 'POST') {
       return jsonResponse(res, 200, { result: { links: { progress: { id: 'rollback-progress-456' } } } });
     }
 
+    // ── Batch results ──
     if (path.startsWith('/api/sn_cicd/app/batch/results/')) {
       const batchResults = opts.batchResults ?? MOCK_BATCH_RESULTS;
       return jsonResponse(res, 200, batchResults);
     }
 
+    // ── Progress polling ──
     if (path.startsWith('/api/sn_cicd/progress/')) {
+      const progressId = path.split('/').pop();
       callCount.progress++;
-      // Return in-progress on first poll, complete on subsequent
+
+      // Failed app progress — return numeric status 3
+      if (progressId.startsWith('progress-fail-')) {
+        return jsonResponse(res, 200, {
+          result: { status: 3, percent_complete: 100, status_message: 'Installation failed' },
+        });
+      }
+
+      // Single-app progress (app_repo) — use numeric status codes
+      if (progressId.startsWith('progress-') && !progressId.startsWith('progress-abc')) {
+        const key = `progress_${progressId}`;
+        callCount[key] = (callCount[key] ?? 0) + 1;
+        if (callCount[key] === 1 && !opts.skipInProgress) {
+          return jsonResponse(res, 200, { result: { status: 1, percent_complete: 50 } });
+        }
+        return jsonResponse(res, 200, { result: { status: 2, percent_complete: 100 } });
+      }
+
+      // Rollback progress (app_repo) — succeed immediately
+      if (progressId.startsWith('rollback-progress-') && progressId !== 'rollback-progress-456') {
+        return jsonResponse(res, 200, { result: { status: 2, percent_complete: 100 } });
+      }
+
+      // Batch progress (string status codes) — existing behavior
+      const batchKey = `progress_batch_${callCount.progress}`;
       if (callCount.progress === 1 && !opts.skipInProgress) {
         return jsonResponse(res, 200, { result: { percentComplete: 50, status: 'in_progress', packages: [] } });
       }

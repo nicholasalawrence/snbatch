@@ -10,9 +10,8 @@ import { z } from 'zod';
 import path from 'path';
 import { resolveCredentials } from '../api/auth.js';
 import { createClient } from '../api/index.js';
-import { startBatchInstall, startBatchRollback, pollProgress, fetchBatchResults } from '../api/cicd.js';
+import { installApp, rollbackApp, pollProgress, isProgressSuccess, startBatchRollback } from '../api/cicd.js';
 import { fetchInstalledApps } from '../api/table.js';
-import { toInstallPayload } from '../models/package.js';
 import { buildManifest, readManifest, writeManifest, defaultManifestName } from '../models/manifest.js';
 import { reconcilePackages } from '../commands/reconcile.js';
 import { scanData } from '../commands/scan.js';
@@ -105,7 +104,7 @@ export function registerTools(server) {
 
   server.tool(
     'snbatch_install',
-    'Execute a batch install. For major updates or rollbacks, a confirmation challenge is issued first — relay it to the user and call again with confirmationToken + confirmationValue.',
+    'Install app updates sequentially. For major updates, a confirmation challenge is issued first — relay it to the user and call again with confirmationToken + confirmationValue.',
     {
       profile: z.string().optional(),
       manifest: z.string().optional().describe('Path to a manifest file (relative to cwd)'),
@@ -143,37 +142,34 @@ export function registerTools(server) {
         }
 
         const client = createClient(creds);
-        const payloads = packages.map(toInstallPayload);
-        const { progressId, rollbackToken, resultsId } = await startBatchInstall(client, payloads);
 
-        let lastData = null;
-        for await (const data of pollProgress(client, progressId, {
-          pollInterval: config.pollInterval,
-          maxPollDuration: config.maxPollDuration,
-        })) { lastData = data; }
-
-        // Fetch per-package results from the dedicated results endpoint
-        let batchResults = [];
-        if (resultsId) {
-          try {
-            batchResults = await fetchBatchResults(client, resultsId);
-          } catch { /* fall through to progress data */ }
-        }
-        if (!batchResults.length) {
-          batchResults = lastData?.packages ?? lastData?.result?.packages ?? [];
-        }
-
+        // Sequential install — always continue-on-error in MCP (no TTY for prompts)
+        const rollbackVersions = [];
         let succeeded = 0;
         let failed = 0;
-        for (const r of batchResults) {
-          const s = (r.status ?? r.state ?? '').toLowerCase();
-          if (s === 'success' || s === 'complete') succeeded++;
-          else failed++;
+        const results = [];
+
+        for (const pkg of packages) {
+          try {
+            const { progressId, rollbackVersion } = await installApp(client, pkg.scope, pkg.targetVersion);
+            if (rollbackVersion) rollbackVersions.push({ scope: pkg.scope, version: rollbackVersion });
+
+            let lastData = null;
+            for await (const data of pollProgress(client, progressId, {
+              pollInterval: config.sequentialPollInterval ?? 5000,
+              maxPollDuration: config.maxPollDuration,
+            })) { lastData = data; }
+
+            const success = isProgressSuccess(lastData);
+            if (success) succeeded++;
+            else failed++;
+            results.push({ scope: pkg.scope, name: pkg.name, status: success ? 'success' : 'failed', error: success ? null : (lastData?.status_message ?? 'Unknown error') });
+          } catch (e) {
+            failed++;
+            results.push({ scope: pkg.scope, name: pkg.name, status: 'failed', error: e.message });
+          }
         }
 
-        // P1-5: hash rollback token for history storage
-        const tokenHash = rollbackToken ? hashRollbackToken(rollbackToken) : null;
-        const tokenHint = rollbackToken ? rollbackToken.slice(-4) : null;
         const resultStatus = failed === 0 ? 'success' : succeeded === 0 ? 'failed' : 'partial';
 
         await appendHistory({
@@ -183,29 +179,28 @@ export function registerTools(server) {
           instanceHost: creds.instanceHost,
           profile: profile ?? null,
           action: 'install',
+          mode: 'sequential',
           packages: packages.map((p) => ({ scope: p.scope, from: p.currentVersion, to: p.targetVersion })),
           result: resultStatus,
-          progressId,
-          rollbackTokenHash: tokenHash,
-          rollbackTokenHint: tokenHint,
+          rollbackVersions,
         });
 
-        // P1: Return only the hint, not the full token — MCP transcripts may be logged
-        return ok({ status: 'complete', result: resultStatus, progressId, rollbackTokenHint: tokenHint ? `...${tokenHint}` : null, succeeded, failed, packages: packages.length, batchResults });
+        return ok({ status: 'complete', result: resultStatus, succeeded, failed, packages: packages.length, rollbackVersions: rollbackVersions.length, results });
       } catch (e) { return safeErr(e); }
     }
   );
 
   server.tool(
     'snbatch_rollback',
-    'Roll back a batch installation. Always requires typed confirmation — issue a challenge first.',
+    'Roll back installed apps. Provide either rollbackVersions (per-app) or rollbackToken (legacy batch). Always requires typed confirmation — issue a challenge first.',
     {
-      rollbackToken: z.string().describe('Rollback token from install history'),
+      rollbackVersions: z.array(z.object({ scope: z.string(), version: z.string() })).optional().describe('Per-app rollback versions from install history'),
+      rollbackToken: z.string().optional().describe('Batch rollback token (legacy)'),
       profile: z.string().optional(),
       confirmationToken: z.string().optional(),
       confirmationValue: z.string().optional(),
     },
-    async ({ rollbackToken, profile, confirmationToken, confirmationValue }) => {
+    async ({ rollbackVersions, rollbackToken, profile, confirmationToken, confirmationValue }) => {
       try {
         const creds = await resolveCredentials(profile);
 
@@ -218,29 +213,76 @@ export function registerTools(server) {
         if (!result.valid) return err(result.error);
 
         const client = createClient(creds);
-        const { progressId } = await startBatchRollback(client, rollbackToken);
-
-        let lastData = null;
         const config = await loadConfig({});
-        for await (const data of pollProgress(client, progressId, {
-          pollInterval: config.pollInterval,
-          maxPollDuration: config.maxPollDuration,
-        })) { lastData = data; }
 
-        await appendHistory({
-          id: crypto.randomUUID(),
-          timestamp: new Date().toISOString(),
-          instance: creds.baseUrl,
-          instanceHost: creds.instanceHost,
-          profile: profile ?? null,
-          action: 'rollback',
-          rollbackTokenHash: hashRollbackToken(rollbackToken),
-          rollbackTokenHint: rollbackToken.slice(-4),
-          result: 'success',
-          progressId,
-        });
+        if (rollbackVersions?.length) {
+          // Per-app rollback using app_repo API
+          let succeeded = 0;
+          let failed = 0;
+          const results = [];
 
-        return ok({ status: 'complete', progressId, lastResult: lastData });
+          for (const { scope, version } of rollbackVersions) {
+            try {
+              const { progressId } = await rollbackApp(client, scope, version);
+              let lastData = null;
+              for await (const data of pollProgress(client, progressId, {
+                pollInterval: config.sequentialPollInterval ?? 5000,
+                maxPollDuration: config.maxPollDuration,
+              })) { lastData = data; }
+
+              const success = isProgressSuccess(lastData);
+              if (success) succeeded++;
+              else failed++;
+              results.push({ scope, version, status: success ? 'success' : 'failed' });
+            } catch (e) {
+              failed++;
+              results.push({ scope, version, status: 'failed', error: e.message });
+            }
+          }
+
+          const resultStatus = failed === 0 ? 'success' : succeeded === 0 ? 'failed' : 'partial';
+
+          await appendHistory({
+            id: crypto.randomUUID(),
+            timestamp: new Date().toISOString(),
+            instance: creds.baseUrl,
+            instanceHost: creds.instanceHost,
+            profile: profile ?? null,
+            action: 'rollback',
+            mode: 'sequential',
+            rollbackVersions,
+            result: resultStatus,
+          });
+
+          return ok({ status: 'complete', result: resultStatus, succeeded, failed, results });
+        } else if (rollbackToken) {
+          // Legacy batch rollback
+          const { progressId } = await startBatchRollback(client, rollbackToken);
+
+          let lastData = null;
+          for await (const data of pollProgress(client, progressId, {
+            pollInterval: config.pollInterval,
+            maxPollDuration: config.maxPollDuration,
+          })) { lastData = data; }
+
+          await appendHistory({
+            id: crypto.randomUUID(),
+            timestamp: new Date().toISOString(),
+            instance: creds.baseUrl,
+            instanceHost: creds.instanceHost,
+            profile: profile ?? null,
+            action: 'rollback',
+            mode: 'batch',
+            rollbackTokenHash: hashRollbackToken(rollbackToken),
+            rollbackTokenHint: rollbackToken.slice(-4),
+            result: 'success',
+            progressId,
+          });
+
+          return ok({ status: 'complete', progressId, lastResult: lastData });
+        } else {
+          return err('Provide either rollbackVersions or rollbackToken');
+        }
       } catch (e) { return safeErr(e); }
     }
   );

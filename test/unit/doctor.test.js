@@ -45,12 +45,17 @@ describe('snbatch doctor', () => {
       expect(ver.detail).toBe('Yokohama Patch 3');
     });
 
-    it('checks CI/CD plugins', async () => {
+    it('checks CI/CD REST API plugin', async () => {
       const results = await runDoctorChecks(client, creds);
-      const spoke = results.find((r) => r.detail?.includes('com.sn_cicd_spoke'));
       const cd = results.find((r) => r.detail?.includes('com.glide.continuousdelivery'));
-      expect(spoke.pass).toBe(true);
       expect(cd.pass).toBe(true);
+    });
+
+    it('checks App Repo Install API', async () => {
+      const results = await runDoctorChecks(client, creds);
+      const appRepo = results.find((r) => r.name === 'App Repo Install API');
+      expect(appRepo.pass).toBe(true);
+      expect(appRepo.detail).toContain('enabled');
     });
 
     it('checks CI/CD role', async () => {
@@ -112,22 +117,18 @@ describe('snbatch doctor', () => {
     });
   });
 
-  describe('inactive plugin', () => {
+  describe('app repo install API disabled', () => {
     beforeEach(async () => {
-      mock = await createMockServer({
-        plugins: {
-          'com.sn_cicd_spoke': { id: 'com.sn_cicd_spoke', active: 'false' },
-          'com.glide.continuousdelivery': { id: 'com.glide.continuousdelivery', active: 'true' },
-        },
-      });
+      mock = await createMockServer({ appRepoInstallEnabled: false });
       client = createClient({ baseUrl: mock.baseUrl, username: 'admin', password: 'test' });
     });
 
-    it('reports inactive plugin', async () => {
+    it('reports disabled app repo install API as fixable', async () => {
       const results = await runDoctorChecks(client, creds);
-      const spoke = results.find((r) => r.name === 'CI/CD Spoke');
-      expect(spoke.pass).toBe(false);
-      expect(spoke.detail).toContain('inactive');
+      const appRepo = results.find((r) => r.name === 'App Repo Install API');
+      expect(appRepo.pass).toBe(false);
+      expect(appRepo.detail).toContain('false');
+      expect(appRepo.fixable).toBe(true);
     });
   });
 

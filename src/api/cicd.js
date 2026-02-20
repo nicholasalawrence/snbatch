@@ -1,8 +1,70 @@
 /**
  * ServiceNow CI/CD API client.
- * Handles batch install, rollback, and progress polling.
+ * Handles single-app install (default), batch install (--batch), rollback, and progress polling.
  */
 import { withRetry, sleep } from '../utils/retry.js';
+
+// ── Single-app install/rollback (default) ──────────────────────────────
+
+/**
+ * Install a single app via the app_repo API.
+ * @param {import('axios').AxiosInstance} client
+ * @param {string} scope - App scope (e.g. "x_snc_itsm")
+ * @param {string} version - Target version (e.g. "3.2.4")
+ * @param {{ retries?: number, backoffBase?: number }} [retryOpts]
+ * @returns {Promise<{progressId: string, rollbackVersion: string|null}>}
+ */
+export async function installApp(client, scope, version, retryOpts = {}) {
+  const resp = await withRetry(
+    () => client.post('/api/sn_cicd/app_repo/install', null, {
+      params: { scope, version },
+    }),
+    retryOpts
+  );
+  const result = resp.data.result ?? resp.data;
+  return {
+    progressId: result.links?.progress?.id ?? result.id,
+    rollbackVersion: result.rollback_version ?? null,
+  };
+}
+
+/**
+ * Roll back a single app via the app_repo API.
+ * @param {import('axios').AxiosInstance} client
+ * @param {string} scope - App scope
+ * @param {string} version - Version to roll back to
+ * @param {{ retries?: number, backoffBase?: number }} [retryOpts]
+ * @returns {Promise<{progressId: string}>}
+ */
+export async function rollbackApp(client, scope, version, retryOpts = {}) {
+  const resp = await withRetry(
+    () => client.post('/api/sn_cicd/app_repo/rollback', null, {
+      params: { scope, version },
+    }),
+    retryOpts
+  );
+  const result = resp.data.result ?? resp.data;
+  return { progressId: result.links?.progress?.id ?? result.id };
+}
+
+/**
+ * Determine whether a progress poll result indicates success.
+ * Handles both numeric (app_repo: 2=Succeeded, 3=Failed) and
+ * string (batch: "complete", "success", "failed") status values.
+ * @param {object} data - Final poll data
+ * @returns {boolean}
+ */
+export function isProgressSuccess(data) {
+  if (!data) return false;
+  const raw = data.status ?? data.state;
+  const statusNum = typeof raw === 'number' ? raw : parseInt(raw, 10);
+  if (statusNum === 2) return true;
+  if (statusNum === 3) return false;
+  const statusStr = String(raw ?? '').toLowerCase();
+  return statusStr === 'success' || statusStr === 'complete';
+}
+
+// ── Batch install/rollback (--batch flag) ──────────────────────────────
 
 /**
  * Start a batch installation.
@@ -62,9 +124,14 @@ export async function fetchBatchResults(client, resultsId, retryOpts = {}) {
   return Array.isArray(data) ? data : data?.batch_items ?? [];
 }
 
+// ── Progress polling (shared) ──────────────────────────────────────────
+
 /**
  * Poll the progress API until completion.
  * Yields each poll response for real-time updates.
+ *
+ * Handles both numeric status codes (app_repo: 0=Pending, 1=Running, 2=Succeeded, 3=Failed)
+ * and string status values (batch: "complete", "success", "failed").
  *
  * P2-2: Removed withRetry from poll calls to avoid double-retry.
  * Retries are handled manually inside the generator.
@@ -72,7 +139,7 @@ export async function fetchBatchResults(client, resultsId, retryOpts = {}) {
  * @param {import('axios').AxiosInstance} client
  * @param {string} progressId
  * @param {{ pollInterval?: number, maxPollDuration?: number, retries?: number, backoffBase?: number }} opts
- * @yields {{ percentComplete: number, status: string, packages: object[] }}
+ * @yields {object} Progress data from API
  */
 export async function* pollProgress(client, progressId, opts = {}) {
   const { pollInterval = 10_000, maxPollDuration = 7_200_000, retries = 3, backoffBase = 2000 } = opts;
@@ -108,16 +175,21 @@ export async function* pollProgress(client, progressId, opts = {}) {
     yield data;
 
     const pct = data.percentComplete ?? data.percent_complete ?? 0;
-    const statusVal = (data.status ?? data.state ?? '').toLowerCase();
+    const raw = data.status ?? data.state;
+    const statusNum = typeof raw === 'number' ? raw : parseInt(raw, 10);
+    const statusStr = String(raw ?? '').toLowerCase();
 
-    if (pct >= 100 || statusVal === 'complete' || statusVal === 'success' || statusVal === 'failed') {
-      return;
-    }
+    // Numeric terminal: 2=Succeeded, 3=Failed
+    if (statusNum === 2 || statusNum === 3) return;
+    // String terminal (batch API compat)
+    if (statusStr === 'complete' || statusStr === 'success' || statusStr === 'failed') return;
+    // Percent-based terminal
+    if (pct >= 100) return;
 
     // Reset interval back to normal after backoff
     interval = pollInterval;
     await sleep(interval);
   }
 
-  throw new Error(`Polling timed out after ${maxPollDuration / 60000} minutes. The batch may still be running server-side.`);
+  throw new Error(`Polling timed out after ${maxPollDuration / 60000} minutes. The operation may still be running server-side.`);
 }

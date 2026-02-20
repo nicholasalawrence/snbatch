@@ -5,7 +5,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createMockServer } from './mocks/snow-server.js';
 import { createClient } from '../../src/api/index.js';
 import { fetchInstalledApps, fetchUpdatableApps } from '../../src/api/table.js';
-import { startBatchInstall, pollProgress, fetchBatchResults } from '../../src/api/cicd.js';
+import {
+  installApp, rollbackApp, pollProgress, isProgressSuccess,
+  startBatchInstall, fetchBatchResults,
+} from '../../src/api/cicd.js';
 import { buildPackageObject } from '../../src/models/package.js';
 import { buildManifest, computeStats } from '../../src/models/manifest.js';
 import { isUpgrade } from '../../src/utils/version.js';
@@ -70,6 +73,70 @@ describe('manifest generation', () => {
     expect(manifest.stats).toMatchObject({ total: 3, patch: 1, minor: 1, major: 1 });
   });
 });
+
+// ── Sequential install (default) ─────────────────────────────────────
+
+describe('sequential install + poll', () => {
+  it('installs a single app and polls to completion with numeric status', async () => {
+    const { progressId, rollbackVersion } = await installApp(client, 'x_snc_itsm', '3.2.4');
+    expect(progressId).toBe('progress-x_snc_itsm-3.2.4');
+    expect(rollbackVersion).toBe('x_snc_itsm-prev');
+
+    const progressData = [];
+    for await (const data of pollProgress(client, progressId, { pollInterval: 50, maxPollDuration: 10_000 })) {
+      progressData.push(data);
+    }
+
+    expect(progressData.length).toBeGreaterThanOrEqual(1);
+    const last = progressData[progressData.length - 1];
+    expect(last.status).toBe(2); // numeric Succeeded
+    expect(isProgressSuccess(last)).toBe(true);
+  });
+
+  it('handles failed app install with numeric status 3', async () => {
+    await mock.close();
+    mock = await createMockServer({ failScopes: ['x_snc_sec'] });
+    client = createClient({ baseUrl: mock.baseUrl, username: 'admin', password: 'test' });
+
+    const { progressId } = await installApp(client, 'x_snc_sec', '3.0.0');
+    expect(progressId).toBe('progress-fail-x_snc_sec');
+
+    const progressData = [];
+    for await (const data of pollProgress(client, progressId, { pollInterval: 50, maxPollDuration: 10_000 })) {
+      progressData.push(data);
+    }
+
+    const last = progressData[progressData.length - 1];
+    expect(last.status).toBe(3); // numeric Failed
+    expect(isProgressSuccess(last)).toBe(false);
+    expect(last.status_message).toBe('Installation failed');
+  });
+
+  it('tracks appInstall call count', async () => {
+    await installApp(client, 'x_snc_itsm', '3.2.4');
+    await installApp(client, 'x_snc_hr', '4.2.1');
+    expect(mock.callCount.appInstall).toBe(2);
+  });
+});
+
+describe('sequential rollback', () => {
+  it('rolls back a single app via app_repo/rollback', async () => {
+    const { progressId } = await rollbackApp(client, 'x_snc_itsm', '3.2.1');
+    expect(progressId).toBe('rollback-progress-x_snc_itsm');
+
+    const progressData = [];
+    for await (const data of pollProgress(client, progressId, { pollInterval: 50, maxPollDuration: 10_000 })) {
+      progressData.push(data);
+    }
+
+    const last = progressData[progressData.length - 1];
+    expect(last.status).toBe(2);
+    expect(isProgressSuccess(last)).toBe(true);
+    expect(mock.callCount.appRollback).toBe(1);
+  });
+});
+
+// ── Batch install (--batch flag) ─────────────────────────────────────
 
 describe('batch install + poll + results', () => {
   it('starts a batch, polls to completion, and fetches results', async () => {

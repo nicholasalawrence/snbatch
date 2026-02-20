@@ -9,7 +9,6 @@ import { printInfo, printError, printSuccess, printWarn, chalk } from '../utils/
 import { validateTypedConfirmation } from '../utils/confirmations.js';
 
 const CICD_PLUGINS = [
-  { id: 'com.sn_cicd_spoke', label: 'CI/CD Spoke' },
   { id: 'com.glide.continuousdelivery', label: 'CI/CD REST API' },
 ];
 
@@ -94,7 +93,36 @@ export async function runDoctorChecks(client, creds) {
     }));
   }
 
-  // 5. User has sn_cicd.sys_ci_automation role
+  // 5. App repo install API enabled
+  results.push(await runCheck('App Repo Install API', async () => {
+    const resp = await client.get('/api/now/table/sys_properties', {
+      params: {
+        sysparm_fields: 'sys_id,value',
+        sysparm_query: 'name=sn_cicd.apprepo.install.enabled',
+        sysparm_limit: 1,
+      },
+    });
+    const row = resp.data.result?.[0];
+    if (!row) {
+      return {
+        pass: false,
+        detail: 'sn_cicd.apprepo.install.enabled property not found',
+        fixable: true,
+        fixFn: () => setProperty(client, 'sn_cicd.apprepo.install.enabled', 'true'),
+      };
+    }
+    const enabled = row.value === 'true';
+    return enabled
+      ? { pass: true, detail: 'App repo install API enabled' }
+      : {
+          pass: false,
+          detail: 'sn_cicd.apprepo.install.enabled is false',
+          fixable: true,
+          fixFn: () => setProperty(client, 'sn_cicd.apprepo.install.enabled', 'true'),
+        };
+  }));
+
+  // 6. User has sn_cicd.sys_ci_automation role (renumbered from 5)
   results.push(await runCheck('CI/CD Role', async () => {
     const resp = await client.get('/api/now/table/sys_user_has_role', {
       params: {
@@ -114,7 +142,7 @@ export async function runDoctorChecks(client, creds) {
     };
   }));
 
-  // 6. Web service access on tables
+  // 7. Web service access on tables
   for (const tableName of WS_TABLES) {
     results.push(await runCheck(`Web Service Access`, async () => {
       const resp = await client.get('/api/now/table/sys_db_object', {
@@ -137,7 +165,7 @@ export async function runDoctorChecks(client, creds) {
     }));
   }
 
-  // 7. Store apps with updates available — use stats API for accurate count
+  // 8. Store apps with updates available — use stats API for accurate count
   results.push(await runCheck('Updates available', async () => {
     let count;
     try {
@@ -224,6 +252,22 @@ async function fixWsAccess(client, sysId, tableName) {
     ws_access: 'true',
   });
   return `Enabled ws_access on ${tableName}`;
+}
+
+/**
+ * Fix: set or create a system property.
+ */
+async function setProperty(client, name, value) {
+  const resp = await client.get('/api/now/table/sys_properties', {
+    params: { sysparm_fields: 'sys_id', sysparm_query: `name=${name}`, sysparm_limit: 1 },
+  });
+  const row = resp.data.result?.[0];
+  if (row) {
+    await client.patch(`/api/now/table/sys_properties/${row.sys_id}`, { value });
+  } else {
+    await client.post('/api/now/table/sys_properties', { name, value, type: 'true_false' });
+  }
+  return `Set ${name} = ${value}`;
 }
 
 export function doctorCommand() {
