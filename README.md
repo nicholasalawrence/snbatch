@@ -2,7 +2,7 @@
 
 > **Not affiliated with or endorsed by ServiceNow.** Uses documented ServiceNow REST APIs; behavior may vary by release and instance configuration. Best-effort open-source support — always validate in non-production first.
 
-Batch-update ServiceNow store applications and plugins across multiple instances, with built-in safety rails, cross-environment replay, and LLM integration via MCP.
+Batch-update ServiceNow store applications across multiple instances, with built-in safety rails, cross-environment replay, and LLM integration via MCP.
 
 After every ServiceNow upgrade, admins face 100–200+ store applications needing updates. The platform provides no native batch update capability — it's one at a time, click-wait-repeat, for hours per instance. **snbatch** solves this.
 
@@ -12,7 +12,7 @@ After every ServiceNow upgrade, admins face 100–200+ store applications needin
 npm install -g snbatch
 ```
 
-**Requirements:** Node.js ≥ 22, ServiceNow CI/CD spoke activated, service account with `sn_cicd.sys_ci_automation` role.
+**Requirements:** Node.js ≥ 22, ServiceNow CI/CD REST API plugin (`com.glide.continuousdelivery`) activated, App Repo Install API enabled (`sn_cicd.apprepo.install.enabled = true`), service account with `sn_cicd.sys_ci_automation` role. Run `snbatch doctor` to verify prerequisites.
 
 ## Quick Start
 
@@ -37,7 +37,7 @@ snbatch install --manifest snbatch-manifest-dev-*.json
 Discover available updates on the active instance.
 
 ```
-snbatch scan [--profile <name>] [--type app|plugin|all] [--patches-only] [--json]
+snbatch scan [--profile <name>] [--patches-only] [--json]
 ```
 
 ### `snbatch preview`
@@ -52,29 +52,52 @@ snbatch preview [--patches|--minor|--all] [--exclude <scope1,scope2>] [--out <fi
 
 ### `snbatch install`
 
-Execute a batch update.
+Install app updates sequentially (one at a time, with per-app progress).
 
 ```bash
 snbatch install --patches                        # All patches, active instance
 snbatch install --manifest dev-manifest.json     # From manifest
 snbatch install --scope sn_hr_service_delivery   # Single app
+snbatch install --start-at "02:00"               # Schedule for 2 AM
+snbatch install --patches --continue-on-error    # Don't stop on failure
+snbatch install --patches --stop-on-error        # Halt immediately on failure
+snbatch install --batch --patches                # Legacy batch API (advanced)
 ```
+
+**Flags:**
+- `--continue-on-error` — skip failed packages and continue
+- `--stop-on-error` — halt immediately on first failure (no prompt)
+- `--start-at <HH:MM|ISO>` — schedule start with countdown
+- `--batch` — use legacy batch install API instead of sequential
 
 **Confirmation:**
 - Patches / minor: y/N prompt (skippable with `-y`)
 - Any major updates: must type the instance hostname — **not skippable**
 
+**Non-TTY / CI:** Without a terminal, failures halt immediately (same as `--stop-on-error`) unless `--continue-on-error` is set.
+
 ### `snbatch rollback`
 
-Roll back a batch installation (all-or-nothing).
+Roll back installed apps to their previous versions. Supports both per-app rollback (from sequential installs) and legacy batch rollback.
 
 ```bash
-snbatch rollback --last
-snbatch rollback --batch-id <id>
-snbatch rollback --list
+snbatch rollback --last                 # Roll back most recent install
+snbatch rollback --batch-id <id>        # Roll back a specific history entry
+snbatch rollback --list                 # Show rollback-eligible entries
+snbatch rollback --token <token>        # Legacy batch rollback token
 ```
 
 Always requires typed instance hostname confirmation.
+
+### `snbatch doctor`
+
+Check instance prerequisites and optionally auto-fix issues.
+
+```bash
+snbatch doctor                          # Check all prerequisites
+snbatch doctor --fix                    # Auto-fix what's possible (requires admin)
+snbatch doctor --json                   # Output results as JSON
+```
 
 ### `snbatch reconcile`
 
@@ -143,8 +166,8 @@ snbatch serve --mcp
 ## CI/CD Pipeline Example (GitHub Actions)
 
 ```yaml
-- name: Batch update ServiceNow patches
-  run: snbatch install --patches --yes
+- name: Install ServiceNow patch updates
+  run: snbatch install --patches --yes --continue-on-error
   env:
     SNBATCH_INSTANCE: ${{ secrets.SN_INSTANCE }}
     SNBATCH_USERNAME: ${{ secrets.SN_USERNAME }}
@@ -171,14 +194,12 @@ snbatch serve --mcp
 
 | API | Purpose |
 |---|---|
-| `POST /api/sn_cicd/app/batch/install` | Execute batch installation |
-| `POST /api/sn_cicd/app/batch/rollback` | Rollback a batch |
+| `POST /api/sn_cicd/app_repo/install` | Install a single app (default) |
+| `POST /api/sn_cicd/app_repo/rollback` | Roll back a single app |
 | `GET /api/sn_cicd/progress/{id}` | Poll installation progress |
-| `GET /api/now/table/sys_store_app` | Discover installed apps |
-| `GET /api/now/table/sys_app_version` | Available versions |
-| `GET /api/now/table/sys_plugins` | Discover plugins |
-
-These APIs have been stable since the Orlando release.
+| `GET /api/now/table/sys_store_app` | Discover installed apps and available updates |
+| `POST /api/sn_cicd/app/batch/install` | Batch install (`--batch` flag) |
+| `POST /api/sn_cicd/app/batch/rollback` | Batch rollback (legacy) |
 
 ## License
 

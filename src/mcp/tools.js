@@ -45,15 +45,25 @@ async function appendHistory(entry) {
 
 // P2-9: Validate that a file path is within cwd — reject traversal and symlinks
 function validatePath(filePath) {
-  const resolved = path.resolve(process.cwd(), filePath);
-  if (!resolved.startsWith(process.cwd() + path.sep) && resolved !== process.cwd()) {
+  const cwd = process.cwd();
+  const resolved = path.resolve(cwd, filePath);
+  if (!resolved.startsWith(cwd + path.sep) && resolved !== cwd) {
     throw new Error('Path must be within the current working directory');
   }
-  // If the path already exists, resolve symlinks and re-check
+  // If the exact path exists, resolve symlinks and re-check
   if (existsSync(resolved)) {
     const real = realpathSync(resolved);
-    if (!real.startsWith(process.cwd() + path.sep) && real !== process.cwd()) {
+    if (!real.startsWith(cwd + path.sep) && real !== cwd) {
       throw new Error('Path resolves via symlink to outside the current working directory');
+    }
+  } else {
+    // For new files, resolve the parent directory's realpath to catch symlinked dirs
+    const parentDir = path.dirname(resolved);
+    if (existsSync(parentDir)) {
+      const realParent = realpathSync(parentDir);
+      if (!realParent.startsWith(cwd + path.sep) && realParent !== cwd) {
+        throw new Error('Parent directory resolves via symlink to outside the current working directory');
+      }
     }
   }
   return resolved;

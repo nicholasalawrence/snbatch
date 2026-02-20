@@ -19,6 +19,9 @@ const WS_TABLES = [
   'sys_properties',
 ];
 
+// Tables where auto-fixing ws_access is too risky (broad read surface)
+const WS_NO_AUTOFIX = new Set(['sys_properties']);
+
 const REQUIRED_ROLE = 'sn_cicd.sys_ci_automation';
 
 /**
@@ -156,11 +159,12 @@ export async function runDoctorChecks(client, creds) {
       if (!row) return { pass: false, detail: `${tableName}: table not found`, fixable: false };
       const wsAccess = row.ws_access === 'true' || row.ws_access === true;
       if (wsAccess) return { pass: true, detail: `${tableName}: ws_access enabled` };
+      const canAutoFix = !WS_NO_AUTOFIX.has(tableName);
       return {
         pass: false,
-        detail: `${tableName}: ws_access disabled`,
-        fixable: true,
-        fixFn: () => fixWsAccess(client, row.sys_id, tableName),
+        detail: `${tableName}: ws_access disabled${canAutoFix ? '' : ' (enable manually — sensitive table)'}`,
+        fixable: canAutoFix,
+        fixFn: canAutoFix ? () => fixWsAccess(client, row.sys_id, tableName) : undefined,
       };
     }));
   }

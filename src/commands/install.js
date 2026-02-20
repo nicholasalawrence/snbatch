@@ -142,6 +142,10 @@ async function runSequentialInstall(client, packages, config, opts, creds, logge
 
         // Handle failure continuation
         if (!opts.continueOnError && i < total - 1) {
+          if (opts.stopOnError || !isTTY) {
+            printError('Halting on first failure.');
+            break;
+          }
           const remaining = total - idx;
           const { cont } = await inquirer.prompt([{
             type: 'confirm',
@@ -169,6 +173,10 @@ async function runSequentialInstall(client, packages, config, opts, creds, logge
       logger.info('App install error', { scope: pkg.scope, error: err.message, elapsed: appElapsed });
 
       if (!opts.continueOnError && i < total - 1) {
+        if (opts.stopOnError || !isTTY) {
+          printError('Halting on first failure.');
+          break;
+        }
         const remaining = total - idx;
         const { cont } = await inquirer.prompt([{
           type: 'confirm',
@@ -213,10 +221,11 @@ async function runBatchInstall(client, packages, config, opts, creds, logger) {
   spinner.start();
 
   const { progressId, rollbackToken, resultsId } = await startBatchInstall(client, payloads, retryOpts);
-  logger.info('Batch install started', { progressId, rollbackToken, resultsId, packages: packages.map((p) => p.scope) });
+  const tokenHintShort = rollbackToken ? `...${rollbackToken.slice(-4)}` : null;
+  logger.info('Batch install started', { progressId, rollbackTokenHint: tokenHintShort, resultsId, packages: packages.map((p) => p.scope) });
   if (debug) {
     spinner.stop();
-    printInfo(`[debug] Submission response: progressId=${progressId}, rollbackToken=${rollbackToken}, resultsId=${resultsId}`);
+    printInfo(`[debug] Submission response: progressId=${progressId}, rollbackToken=${tokenHintShort}, resultsId=${resultsId}`);
     spinner.start();
   }
 
@@ -292,7 +301,7 @@ async function runBatchInstall(client, packages, config, opts, creds, logger) {
     rollbackTokenHash: tokenHash,
     rollbackTokenHint: tokenHint,
   });
-  logger.info('Batch install complete', { succeeded, failed, rollbackToken });
+  logger.info('Batch install complete', { succeeded, failed, rollbackTokenHint: tokenHint });
 
   if (failed > 0 && succeeded > 0) {
     printWarn(`Partial success: ${succeeded} succeeded, ${failed} failed. Rollback token: ${tokenHint}`);
