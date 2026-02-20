@@ -7,13 +7,18 @@ import { withRetry, sleep } from '../utils/retry.js';
 /**
  * Start a batch installation.
  * @param {import('axios').AxiosInstance} client
- * @param {Array<{id: string, version: string}>} packages
+ * @param {Array<{id: string, version: string, type: string, load_demo_data: boolean}>} packages
  * @param {{ retries?: number, backoffBase?: number }} [retryOpts]
  * @returns {Promise<{progressId: string, rollbackToken: string|null}>}
  */
 export async function startBatchInstall(client, packages, retryOpts = {}) {
+  const payload = {
+    name: `snbatch batch install - ${new Date().toISOString().slice(0, 10)}`,
+    packages,
+    notes: `Batch install of ${packages.length} package(s) via snbatch`,
+  };
   const resp = await withRetry(
-    () => client.post('/api/sn_cicd/app/batch/install', { packages }),
+    () => client.post('/api/sn_cicd/app/batch/install', payload),
     retryOpts
   );
   const result = resp.data.result ?? resp.data;

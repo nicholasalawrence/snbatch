@@ -25,13 +25,15 @@ export function buildPackageObject(rawApp, targetVersion) {
 
 /**
  * Convert a package object to the CI/CD API install payload shape.
+ * The id field must be the scope (not sys_id) per the batch install API contract.
  * @param {object} pkg
- * @returns {{ id: string, version: string }}
+ * @returns {{ id: string, version: string, type: string, load_demo_data: boolean }}
  */
 export function toInstallPayload(pkg) {
   return {
-    id: pkg.sysId,
+    id: pkg.scope,
     version: pkg.targetVersion,
-    type: pkg.packageType === 'plugin' ? 'plugin' : 'application',
+    type: 'application',
+    load_demo_data: false,
   };
 }
