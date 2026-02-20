@@ -199,6 +199,8 @@ If the user selects **S**, a numbered list of only demo-capable apps is shown an
 
 In non-interactive mode (piped stdin/stdout, or `--yes`), demo data defaults to false and a notice is printed. This prevents CI/CD pipelines from hanging on a prompt.
 
+> **MCP usage note:** When snbatch is invoked via the ServiceNow MCP server, the interactive terminal prompt is replaced by natural language conversation. Claude asks the user which apps should receive demo data, interprets their response, and sets the appropriate manifest flags before proceeding with install. The manifest format and install behavior are identical regardless of which interface is used.
+
 **Manifest structure:**
 ```json
 {
