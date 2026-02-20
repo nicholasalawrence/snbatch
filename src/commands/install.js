@@ -93,7 +93,7 @@ async function runSequentialInstall(client, packages, config, opts, creds, logge
     const appStart = Date.now();
 
     try {
-      const { progressId, rollbackVersion } = await installApp(client, pkg.scope, pkg.targetVersion, retryOpts);
+      const { progressId, rollbackVersion } = await installApp(client, pkg.scope, pkg.targetVersion, retryOpts, pkg.loadDemoData ?? false);
 
       if (rollbackVersion) {
         rollbackVersions.push({ scope: pkg.scope, version: rollbackVersion });

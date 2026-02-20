@@ -69,7 +69,9 @@ The CI/CD Spoke requires a Basic Auth credential bound to the `sn_cicd_spoke.CIC
 
 snbatch uses the **single app install API** (`/api/sn_cicd/app_repo/install`) rather than the batch install API. The batch API (`/api/sn_cicd/app/batch/install`) requires additional store connection configuration that most instances don't have. The single app API works reliably once the credential alias is configured.
 
-**Request:** `POST /api/sn_cicd/app_repo/install?scope={scope}&version={version}`
+**Request:** `POST /api/sn_cicd/app_repo/install?scope={scope}&version={version}[&load_demo_data=true]`
+
+The `load_demo_data` parameter is passed when the manifest package has `loadDemoData: true` (set during `snbatch preview`).
 
 **Response:**
 ```json
@@ -138,13 +140,25 @@ Checks all instance prerequisites and reports pass/fail for each. Optionally fix
 
 Connects to the active instance and inventories available store app updates.
 
-**Server-side filtering:** Queries `sys_store_app` with `active=true^update_available=true` so only apps that actually need updating are returned. Pagination handles instances with 1000+ apps.
+**Server-side filtering:** Queries `sys_store_app` with `active=true^update_available=true` so only apps that actually need updating are returned. Also fetches `apps_in_jumbo` and `demo_data` fields. Pagination handles instances with 1000+ apps.
 
 **Output per package:**
 - Name, scope
 - Current installed version
 - Latest available version
 - Version delta: 🟢 patch, 🟡 minor, 🔴 major
+
+**Jumbo app detection:** Some apps are bundles containing multiple `com.*` platform plugins. These are identified by a non-empty `apps_in_jumbo` field on `sys_store_app`. They are automatically excluded from the installable update list because the CI/CD API requires an "offering plugin ID" to select which sub-plugins to install — a choice that requires manual intervention. Excluded jumbo apps are listed in a warning block after the main scan summary:
+
+```
+Summary: 108 patches, 12 minor, 3 major — 123 total (2 excluded — jumbo apps, see below)
+
+⚠  2 app(s) excluded — jumbo bundles requiring manual installation:
+  • Healthcare CSC Bundle (sn_hs_csc)
+  • SAM SaaS Integration (sn_sam_saas_int)
+  These contain bundled platform plugins. Install them via the ServiceNow UI:
+  System Applications → All Available Applications → All
+```
 
 **Flags:**
 - `--format table|json|csv` — output format (default: table for TTY, json when piped)
@@ -165,6 +179,25 @@ Generates a detailed upgrade plan and saves it as a manifest file. Primary safet
 - `--exclude <scope1,scope2>` — exclude specific packages
 - `--out <filename>` — custom manifest filename
 - `--profile <n>` — target a specific instance
+- `-y, --yes` — skip interactive prompts (no demo data)
+
+**Jumbo app warning:** Same jumbo exclusion warning as scan — displayed before the manifest table when jumbo apps exist.
+
+**Demo data selection (interactive TTY only):**
+
+If any packages in the update list have demo data available (`demo_data = "Has demo data"` on `sys_store_app`), the user is prompted before the manifest is written:
+
+```
+📦 63 apps have optional demo data available.
+? Install demo data for:
+  ❯ [N] None (skip demo data for all)
+    [A] All apps with demo data
+    [S] Select specific apps
+```
+
+If the user selects **S**, a numbered list of only demo-capable apps is shown and the user enters a comma-separated list of numbers. Selected apps get `loadDemoData: true` in the manifest and are marked with 📦 in the preview table.
+
+In non-interactive mode (piped stdin/stdout, or `--yes`), demo data defaults to false and a notice is printed. This prevents CI/CD pipelines from hanging on a prompt.
 
 **Manifest structure:**
 ```json
@@ -186,7 +219,9 @@ Generates a detailed upgrade plan and saves it as a manifest file. Primary safet
       "targetVersion": "2.3.4",
       "upgradeType": "patch",
       "sourceId": "def456...",
-      "packageType": "app"
+      "packageType": "app",
+      "hasDemoData": false,
+      "loadDemoData": false
     }
   ],
   "stats": { "total": 110, "patch": 110, "minor": 0, "major": 0, "none": 0 }
@@ -322,7 +357,17 @@ Issues discovered during live testing that users will encounter:
 
 **Fix:** Paginated queries using `sysparm_offset`, fetching 500 records per page.
 
-### 6. CI/CD Credential Alias Not Configured (Installs Hang Forever)
+### 6. Jumbo Apps (Offering Plugin ID Required)
+
+**Symptom:** API returns `"Offering plugin id must be specified for application"` immediately on install.
+
+**Cause:** Some store apps are bundles containing multiple `com.*` platform plugins. The CI/CD install API requires specifying which sub-plugin to install ("offering plugin ID"), a choice that can't be made programmatically.
+
+**Fix:** snbatch automatically detects jumbo apps via the `apps_in_jumbo` field on `sys_store_app` (a non-empty JSON array of plugin IDs) and excludes them from all install operations. They are listed in a warning block after scan/preview so the user can install them manually through the ServiceNow UI (System Applications → All Available Applications → All).
+
+Typical instances have 2–5 jumbo apps out of hundreds with updates available. They are identifiable by name — typically suite/bundle apps like "Healthcare CSC Bundle" or "SAM SaaS Integration".
+
+### 7. CI/CD Credential Alias Not Configured (Installs Hang Forever)
 
 **Symptom:** Install accepted by API (returns progress ID) but stays at "Pending" or "Pending resource locks" forever, never progresses to "Running."
 

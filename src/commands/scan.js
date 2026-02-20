@@ -10,12 +10,18 @@ import { createClient } from '../api/index.js';
 import { fetchUpdatableApps, fetchInstanceVersion } from '../api/table.js';
 import { buildPackageObject } from '../models/package.js';
 import { riskEmoji } from '../utils/version.js';
-import { printTable, printInfo, printError, createSpinner } from '../utils/display.js';
+import { printTable, printInfo, printWarn, printError, createSpinner } from '../utils/display.js';
 import { loadConfig } from '../utils/config.js';
 
 /**
  * Core scan logic — returns package objects with upgrade info.
  * Separated from display for reuse by preview and MCP.
+ *
+ * Returns:
+ *   upgrades    — normal packages ready to install
+ *   jumboApps   — excluded bundles requiring manual UI install
+ *   creds       — resolved credentials
+ *   instanceVersion
  */
 export async function scanData(profileName, config) {
   const creds = await resolveCredentials(profileName);
@@ -30,10 +36,28 @@ export async function scanData(profileName, config) {
   // Filter out excluded scopes
   const filtered = updatableApps.filter((p) => !(config.excludeAlways ?? []).includes(p.scope));
 
-  // Build package objects — latestVersion comes directly from sys_store_app
-  const upgrades = filtered.map((p) => buildPackageObject(p, p.latestVersion));
+  // Split jumbo apps (bundled platform plugins) from regular apps
+  const jumboApps = filtered.filter((p) => p.isJumbo);
+  const normal = filtered.filter((p) => !p.isJumbo);
 
-  return { upgrades, creds, instanceVersion };
+  // Build package objects — latestVersion comes directly from sys_store_app
+  const upgrades = normal.map((p) => buildPackageObject(p, p.latestVersion));
+
+  return { upgrades, jumboApps, creds, instanceVersion };
+}
+
+/**
+ * Print the jumbo app exclusion warning block.
+ * @param {Array} jumboApps - Raw app rows from table.js
+ */
+export function printJumboWarning(jumboApps) {
+  if (!jumboApps.length) return;
+  printWarn(`\n${jumboApps.length} app(s) excluded — jumbo bundles requiring manual installation:`);
+  for (const app of jumboApps) {
+    printWarn(`  • ${app.name} (${app.scope})`);
+  }
+  printWarn('  These contain bundled platform plugins. Install them via the ServiceNow UI:');
+  printWarn('  System Applications → All Available Applications → All');
 }
 
 export function scanCommand() {
@@ -55,36 +79,41 @@ export function scanCommand() {
       if (!isJson) spinner.start();
 
       try {
-        const { upgrades, creds, instanceVersion } = await scanData(opts.profile, config);
+        const { upgrades, jumboApps, creds, instanceVersion } = await scanData(opts.profile, config);
         if (!isJson) spinner.succeed(`Scanned ${creds.instanceHost} (${instanceVersion})`);
 
         let results = upgrades;
         if (opts.patchesOnly) results = results.filter((p) => p.upgradeType === 'patch');
 
         if (isJson) {
-          process.stdout.write(JSON.stringify(results, null, 2) + '\n');
+          process.stdout.write(JSON.stringify({ upgrades: results, jumboApps }, null, 2) + '\n');
           return;
         }
 
-        if (!results.length) {
+        if (!results.length && !jumboApps.length) {
           printInfo('No updates available.');
           return;
         }
 
-        printTable(
-          ['Application', 'Scope', 'Current', 'Latest', 'Risk'],
-          results.map((p) => [
-            p.name,
-            p.scope,
-            p.currentVersion,
-            p.targetVersion,
-            riskEmoji(p.upgradeType),
-          ])
-        );
+        if (results.length) {
+          printTable(
+            ['Application', 'Scope', 'Current', 'Latest', 'Risk'],
+            results.map((p) => [
+              p.name,
+              p.scope,
+              p.currentVersion,
+              p.targetVersion,
+              riskEmoji(p.upgradeType),
+            ])
+          );
+        }
 
         const counts = { patch: 0, minor: 0, major: 0 };
         for (const p of results) counts[p.upgradeType] = (counts[p.upgradeType] ?? 0) + 1;
-        printInfo(`Summary: ${counts.patch} patches, ${counts.minor} minor, ${counts.major} major — ${results.length} total`);
+        const jumboNote = jumboApps.length > 0 ? ` (${jumboApps.length} excluded — jumbo apps, see below)` : '';
+        printInfo(`Summary: ${counts.patch} patches, ${counts.minor} minor, ${counts.major} major — ${results.length} total${jumboNote}`);
+
+        printJumboWarning(jumboApps);
       } catch (err) {
         if (!isJson) spinner.fail('Scan failed');
         printError(err.message);

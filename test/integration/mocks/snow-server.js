@@ -5,14 +5,17 @@
 import { createServer } from 'http';
 
 export const MOCK_APPS = [
-  { sys_id: 'app001', scope: 'x_snc_itsm', name: 'ITSM Core', version: '3.2.1', latest_version: '3.2.4', update_available: 'true', active: 'true' },
-  { sys_id: 'app002', scope: 'x_snc_hr',   name: 'HR Service Delivery', version: '4.1.0', latest_version: '4.2.1', update_available: 'true', active: 'true' },
-  { sys_id: 'app003', scope: 'x_snc_sec',  name: 'Security Operations', version: '2.0.3', latest_version: '3.0.0', update_available: 'true', active: 'true' },
+  { sys_id: 'app001', scope: 'x_snc_itsm', name: 'ITSM Core', version: '3.2.1', latest_version: '3.2.4', update_available: 'true', active: 'true', apps_in_jumbo: '', demo_data: 'No demo data' },
+  { sys_id: 'app002', scope: 'x_snc_hr',   name: 'HR Service Delivery', version: '4.1.0', latest_version: '4.2.1', update_available: 'true', active: 'true', apps_in_jumbo: '', demo_data: 'Has demo data' },
+  { sys_id: 'app003', scope: 'x_snc_sec',  name: 'Security Operations', version: '2.0.3', latest_version: '3.0.0', update_available: 'true', active: 'true', apps_in_jumbo: '', demo_data: 'No demo data' },
 ];
+
+// Jumbo app — contains bundled platform plugins
+export const MOCK_JUMBO_APP = { sys_id: 'app005', scope: 'sn_hs_csc', name: 'Healthcare CSC Bundle', version: '1.0.0', latest_version: '1.1.0', update_available: 'true', active: 'true', apps_in_jumbo: '["com.sn_hs_core","com.sn_hs_ext"]', demo_data: 'No demo data' };
 
 // Apps that are already current (no update available)
 export const MOCK_APPS_CURRENT = [
-  { sys_id: 'app004', scope: 'x_snc_csm', name: 'Customer Service', version: '1.5.0', latest_version: '1.5.0', update_available: 'false', active: 'true' },
+  { sys_id: 'app004', scope: 'x_snc_csm', name: 'Customer Service', version: '1.5.0', latest_version: '1.5.0', update_available: 'false', active: 'true', apps_in_jumbo: '', demo_data: 'No demo data' },
 ];
 
 export const MOCK_BATCH_RESULT = {
@@ -58,7 +61,8 @@ export async function createMockServer(opts = {}) {
 
     if (path === '/api/now/stats/sys_store_app') {
       // Stats API — return count of matching apps
-      const allApps = opts.allApps ?? [...MOCK_APPS, ...MOCK_APPS_CURRENT];
+      const baseApps = opts.includeJumbo ? [...MOCK_APPS, MOCK_JUMBO_APP, ...MOCK_APPS_CURRENT] : [...MOCK_APPS, ...MOCK_APPS_CURRENT];
+      const allApps = opts.allApps ?? baseApps;
       let filtered = allApps;
       if (query.includes('update_available=true')) {
         filtered = allApps.filter((a) => a.update_available === 'true');
@@ -67,7 +71,8 @@ export async function createMockServer(opts = {}) {
     }
 
     if (path === '/api/now/table/sys_store_app') {
-      const allApps = opts.allApps ?? [...MOCK_APPS, ...MOCK_APPS_CURRENT];
+      const baseApps = opts.includeJumbo ? [...MOCK_APPS, MOCK_JUMBO_APP, ...MOCK_APPS_CURRENT] : [...MOCK_APPS, ...MOCK_APPS_CURRENT];
+      const allApps = opts.allApps ?? baseApps;
       // Filter by query
       let filtered = allApps;
       if (query.includes('update_available=true')) {

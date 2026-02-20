@@ -12,13 +12,14 @@ import { withRetry, sleep } from '../utils/retry.js';
  * @param {string} scope - App scope (e.g. "x_snc_itsm")
  * @param {string} version - Target version (e.g. "3.2.4")
  * @param {{ retries?: number, backoffBase?: number }} [retryOpts]
+ * @param {boolean} [loadDemoData] - Whether to load demo data at install time
  * @returns {Promise<{progressId: string, rollbackVersion: string|null}>}
  */
-export async function installApp(client, scope, version, retryOpts = {}) {
+export async function installApp(client, scope, version, retryOpts = {}, loadDemoData = false) {
+  const params = { scope, version };
+  if (loadDemoData) params.load_demo_data = 'true';
   const resp = await withRetry(
-    () => client.post('/api/sn_cicd/app_repo/install', null, {
-      params: { scope, version },
-    }),
+    () => client.post('/api/sn_cicd/app_repo/install', null, { params }),
     retryOpts
   );
   const result = resp.data.result ?? resp.data;

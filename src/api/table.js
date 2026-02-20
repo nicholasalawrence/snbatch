@@ -12,6 +12,17 @@ import { withRetry } from '../utils/retry.js';
 const PAGE_SIZE = 500;
 
 function mapAppRow(r) {
+  // apps_in_jumbo is a JSON string (or empty) indicating bundled platform plugins
+  let appsInJumbo = [];
+  if (r.apps_in_jumbo) {
+    try {
+      const parsed = JSON.parse(r.apps_in_jumbo);
+      appsInJumbo = Array.isArray(parsed) ? parsed : [];
+    } catch {
+      // Non-empty but unparseable — treat as jumbo to be safe
+      appsInJumbo = [r.apps_in_jumbo];
+    }
+  }
   return {
     sysId: r.sys_id,
     scope: r.scope,
@@ -19,6 +30,9 @@ function mapAppRow(r) {
     version: r.version,
     latestVersion: r.latest_version ?? r.version,
     updateAvailable: r.update_available === 'true' || r.update_available === true,
+    isJumbo: appsInJumbo.length > 0,
+    appsInJumbo,
+    hasDemoData: typeof r.demo_data === 'string' && r.demo_data.toLowerCase().includes('has'),
     type: 'app',
   };
 }
@@ -55,7 +69,7 @@ async function paginatedFetch(client, path, baseParams, retryOpts = {}) {
  */
 export async function fetchInstalledApps(client, retryOpts = {}) {
   const rows = await paginatedFetch(client, '/api/now/table/sys_store_app', {
-    sysparm_fields: 'sys_id,scope,name,version,latest_version,update_available',
+    sysparm_fields: 'sys_id,scope,name,version,latest_version,update_available,apps_in_jumbo,demo_data',
     sysparm_query: 'active=true',
   }, retryOpts);
 
@@ -71,7 +85,7 @@ export async function fetchInstalledApps(client, retryOpts = {}) {
  */
 export async function fetchUpdatableApps(client, retryOpts = {}) {
   const rows = await paginatedFetch(client, '/api/now/table/sys_store_app', {
-    sysparm_fields: 'sys_id,scope,name,version,latest_version,update_available',
+    sysparm_fields: 'sys_id,scope,name,version,latest_version,update_available,apps_in_jumbo,demo_data',
     sysparm_query: 'active=true^update_available=true',
   }, retryOpts);
 

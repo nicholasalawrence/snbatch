@@ -91,4 +91,25 @@ describe('fetchUpdatableApps', () => {
     expect(itsm.latestVersion).toBe('3.2.4');
     expect(itsm.version).toBe('3.2.1');
   });
+
+  it('maps demo_data field — hasDemoData true for "Has demo data"', async () => {
+    const apps = await fetchUpdatableApps(client);
+    const hr = apps.find((a) => a.scope === 'x_snc_hr');
+    expect(hr.hasDemoData).toBe(true);
+    const itsm = apps.find((a) => a.scope === 'x_snc_itsm');
+    expect(itsm.hasDemoData).toBe(false);
+  });
+
+  it('detects jumbo apps from apps_in_jumbo field', async () => {
+    if (mock) await mock.close();
+    mock = await createMockServer({ includeJumbo: true });
+    client = createClient({ baseUrl: mock.baseUrl, username: 'admin', password: 'test' });
+    const apps = await fetchUpdatableApps(client);
+    const jumbo = apps.find((a) => a.scope === 'sn_hs_csc');
+    expect(jumbo).toBeDefined();
+    expect(jumbo.isJumbo).toBe(true);
+    expect(jumbo.appsInJumbo).toEqual(['com.sn_hs_core', 'com.sn_hs_ext']);
+    const normal = apps.find((a) => a.scope === 'x_snc_itsm');
+    expect(normal.isJumbo).toBe(false);
+  });
 });

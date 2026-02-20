@@ -20,6 +20,8 @@ export function buildPackageObject(rawApp, targetVersion) {
     upgradeType: type,
     sourceId: rawApp.sourceId,
     packageType: rawApp.type ?? 'app',
+    hasDemoData: rawApp.hasDemoData ?? false,
+    loadDemoData: false,
   };
 }
 

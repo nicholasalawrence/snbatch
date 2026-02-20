@@ -86,6 +86,8 @@ snbatch scan --profile prod         # Target a specific instance
 
 Updates are classified as 🟢 patch (low risk), 🟡 minor (medium), or 🔴 major (high — potential breaking changes).
 
+**Jumbo apps:** Some store apps are plugin bundles that can't be installed via the CI/CD API without manual sub-plugin selection. These are automatically detected (via the `apps_in_jumbo` field) and excluded from results with a warning listing them by name and scope. Install them manually via System Applications → All Available Applications → All.
+
 ### `snbatch preview`
 
 Generate a reviewable upgrade manifest. Nothing gets installed without a plan.
@@ -96,9 +98,12 @@ snbatch preview --minor                      # Patches + minor
 snbatch preview --all                        # Everything
 snbatch preview --patches --exclude sn_atf   # With exclusions
 snbatch preview --out my-plan.json           # Custom filename
+snbatch preview --patches -y                 # Skip interactive prompts (CI/CD)
 ```
 
 The manifest is a JSON file that can be reviewed, edited, committed to Git, or shared with a change manager before execution.
+
+**Demo data:** If any apps in the update list have optional demo data available, preview prompts interactively to select which (if any) should load demo data at install time. In non-interactive/CI mode (`--yes` or non-TTY), demo data defaults to off. Selected apps are flagged `loadDemoData: true` in the manifest and marked with 📦 in the preview table.
 
 ### `snbatch install`
 
@@ -262,6 +267,7 @@ This gives you independent rollback capability per risk tier.
 ## Important Notes
 
 - **Store apps only.** Platform plugins are updated during ServiceNow release upgrades and cannot be batch-updated through the CI/CD API.
+- **Jumbo apps excluded automatically.** Apps with bundled platform plugins (`apps_in_jumbo` non-empty) are detected and excluded from installs with a named warning. Install them manually via the ServiceNow UI.
 - **Sequential installs.** snbatch installs apps one at a time using the single app install API (`/api/sn_cicd/app_repo/install`). Each install takes 30–90 seconds. The batch install API exists but requires additional store connection configuration that most instances don't have.
 - **Installs are server-side.** Once submitted, each install continues on the ServiceNow instance even if your terminal disconnects.
 - **Credential alias is mandatory.** The `sn_cicd_spoke.CICD` credential alias must have a Basic Auth credential bound to it. Without this, installs accept but never execute. Run `snbatch doctor` for setup instructions.
