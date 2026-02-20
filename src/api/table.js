@@ -9,25 +9,10 @@
  */
 import { withRetry } from '../utils/retry.js';
 
-/**
- * Fetch all installed store applications with their version info.
- * @param {import('axios').AxiosInstance} client
- * @param {{ retries?: number, backoffBase?: number }} [retryOpts]
- * @returns {Promise<Array<{sysId, scope, name, version, latestVersion, updateAvailable, type: 'app'}>>}
- */
-export async function fetchInstalledApps(client, retryOpts = {}) {
-  const resp = await withRetry(
-    () => client.get('/api/now/table/sys_store_app', {
-      params: {
-        sysparm_fields: 'sys_id,scope,name,version,latest_version,update_available',
-        sysparm_limit: 1000,
-        sysparm_query: 'active=true',
-      },
-    }),
-    retryOpts
-  );
+const PAGE_SIZE = 500;
 
-  return (resp.data.result ?? []).map((r) => ({
+function mapAppRow(r) {
+  return {
     sysId: r.sys_id,
     scope: r.scope,
     name: r.name,
@@ -35,37 +20,62 @@ export async function fetchInstalledApps(client, retryOpts = {}) {
     latestVersion: r.latest_version ?? r.version,
     updateAvailable: r.update_available === 'true' || r.update_available === true,
     type: 'app',
-  }));
+  };
+}
+
+/**
+ * Paginated fetch helper — loops with sysparm_offset until a partial page.
+ */
+async function paginatedFetch(client, path, baseParams, retryOpts = {}) {
+  let offset = 0;
+  const allResults = [];
+
+  while (true) {
+    const resp = await withRetry(
+      () => client.get(path, {
+        params: { ...baseParams, sysparm_limit: PAGE_SIZE, sysparm_offset: offset },
+      }),
+      retryOpts
+    );
+    const page = resp.data.result ?? [];
+    allResults.push(...page);
+    if (page.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+
+  return allResults;
+}
+
+/**
+ * Fetch all installed store applications with their version info.
+ * Paginates to handle instances with >500 apps.
+ * @param {import('axios').AxiosInstance} client
+ * @param {{ retries?: number, backoffBase?: number }} [retryOpts]
+ * @returns {Promise<Array<{sysId, scope, name, version, latestVersion, updateAvailable, type: 'app'}>>}
+ */
+export async function fetchInstalledApps(client, retryOpts = {}) {
+  const rows = await paginatedFetch(client, '/api/now/table/sys_store_app', {
+    sysparm_fields: 'sys_id,scope,name,version,latest_version,update_available',
+    sysparm_query: 'active=true',
+  }, retryOpts);
+
+  return rows.map(mapAppRow);
 }
 
 /**
  * Fetch only store applications that have updates available.
- * Single query — no need for sys_app_version or batching.
+ * Single filtered query with pagination — no need for sys_app_version.
  * @param {import('axios').AxiosInstance} client
  * @param {{ retries?: number, backoffBase?: number }} [retryOpts]
  * @returns {Promise<Array<{sysId, scope, name, version, latestVersion, updateAvailable, type: 'app'}>>}
  */
 export async function fetchUpdatableApps(client, retryOpts = {}) {
-  const resp = await withRetry(
-    () => client.get('/api/now/table/sys_store_app', {
-      params: {
-        sysparm_fields: 'sys_id,scope,name,version,latest_version,update_available',
-        sysparm_limit: 1000,
-        sysparm_query: 'active=true^update_available=true',
-      },
-    }),
-    retryOpts
-  );
+  const rows = await paginatedFetch(client, '/api/now/table/sys_store_app', {
+    sysparm_fields: 'sys_id,scope,name,version,latest_version,update_available',
+    sysparm_query: 'active=true^update_available=true',
+  }, retryOpts);
 
-  return (resp.data.result ?? []).map((r) => ({
-    sysId: r.sys_id,
-    scope: r.scope,
-    name: r.name,
-    version: r.version,
-    latestVersion: r.latest_version ?? r.version,
-    updateAvailable: true,
-    type: 'app',
-  }));
+  return rows.map(mapAppRow);
 }
 
 /**
@@ -82,8 +92,22 @@ export async function fetchInstanceVersion(client) {
         sysparm_limit: 1,
       },
     });
-    return resp.data.result?.[0]?.value ?? 'Unknown';
+    const value = resp.data.result?.[0]?.value;
+    if (value) return value;
   } catch {
-    return 'Unknown';
+    // Fall through to fallback
   }
+
+  // Fallback: try stats.do endpoint
+  try {
+    const resp = await client.get('/stats.do', {
+      headers: { Accept: 'application/json' },
+      timeout: 5000,
+    });
+    if (resp.data?.build_name) return resp.data.build_name;
+  } catch {
+    // Ignore
+  }
+
+  return 'Unknown';
 }

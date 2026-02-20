@@ -16,6 +16,8 @@ const CICD_PLUGINS = [
 const WS_TABLES = [
   'sys_store_app',
   'sys_app_version',
+  'sys_plugins',
+  'sys_properties',
 ];
 
 const REQUIRED_ROLE = 'sn_cicd.sys_ci_automation';
@@ -135,16 +137,28 @@ export async function runDoctorChecks(client, creds) {
     }));
   }
 
-  // 7. Store apps with updates available
+  // 7. Store apps with updates available — use stats API for accurate count
   results.push(await runCheck('Updates available', async () => {
-    const resp = await client.get('/api/now/table/sys_store_app', {
-      params: {
-        sysparm_fields: 'sys_id',
-        sysparm_query: 'active=true^update_available=true',
-        sysparm_limit: 1000,
-      },
-    });
-    const count = resp.data.result?.length ?? 0;
+    let count;
+    try {
+      const statsResp = await client.get('/api/now/stats/sys_store_app', {
+        params: {
+          sysparm_query: 'active=true^update_available=true',
+          sysparm_count: 'true',
+        },
+      });
+      count = Number(statsResp.data.result?.stats?.count ?? 0);
+    } catch {
+      // Fallback: fetch first page and report that
+      const resp = await client.get('/api/now/table/sys_store_app', {
+        params: {
+          sysparm_fields: 'sys_id',
+          sysparm_query: 'active=true^update_available=true',
+          sysparm_limit: 1,
+        },
+      });
+      count = resp.data.result?.length ?? 0;
+    }
     return count > 0
       ? { pass: true, detail: `${count} store app(s) have updates` }
       : { pass: true, detail: 'No updates currently available' };

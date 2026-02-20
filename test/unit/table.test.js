@@ -37,6 +37,35 @@ describe('fetchInstalledApps', () => {
   });
 });
 
+describe('fetchInstalledApps pagination', () => {
+  let mock;
+  let client;
+
+  afterEach(async () => {
+    if (mock) await mock.close();
+  });
+
+  it('paginates when results exceed page size', async () => {
+    // Generate 600 mock apps to test pagination (PAGE_SIZE is 500)
+    const manyApps = Array.from({ length: 600 }, (_, i) => ({
+      sys_id: `app_${String(i).padStart(3, '0')}`,
+      scope: `x_snc_app_${i}`,
+      name: `App ${i}`,
+      version: '1.0.0',
+      latest_version: '1.0.1',
+      update_available: 'true',
+      active: 'true',
+    }));
+    mock = await createMockServer({ allApps: manyApps });
+    client = createClient({ baseUrl: mock.baseUrl, username: 'admin', password: 'test' });
+
+    const apps = await fetchInstalledApps(client);
+    expect(apps).toHaveLength(600);
+    expect(apps[0].scope).toBe('x_snc_app_0');
+    expect(apps[599].scope).toBe('x_snc_app_599');
+  });
+});
+
 describe('fetchUpdatableApps', () => {
   let mock;
   let client;

@@ -52,13 +52,28 @@ export async function createMockServer(opts = {}) {
     const path = url.pathname;
     const query = url.searchParams.get('sysparm_query') ?? '';
 
-    if (path === '/api/now/table/sys_store_app') {
-      // If query filters for update_available=true, return only updatable apps
+    if (path === '/api/now/stats/sys_store_app') {
+      // Stats API — return count of matching apps
+      const allApps = opts.allApps ?? [...MOCK_APPS, ...MOCK_APPS_CURRENT];
+      let filtered = allApps;
       if (query.includes('update_available=true')) {
-        return jsonResponse(res, 200, { result: MOCK_APPS });
+        filtered = allApps.filter((a) => a.update_available === 'true');
       }
-      // Otherwise return all apps (updatable + current)
-      return jsonResponse(res, 200, { result: [...MOCK_APPS, ...MOCK_APPS_CURRENT] });
+      return jsonResponse(res, 200, { result: { stats: { count: String(filtered.length) } } });
+    }
+
+    if (path === '/api/now/table/sys_store_app') {
+      const allApps = opts.allApps ?? [...MOCK_APPS, ...MOCK_APPS_CURRENT];
+      // Filter by query
+      let filtered = allApps;
+      if (query.includes('update_available=true')) {
+        filtered = allApps.filter((a) => a.update_available === 'true');
+      }
+      // Pagination support
+      const limit = parseInt(url.searchParams.get('sysparm_limit') ?? '1000', 10);
+      const offset = parseInt(url.searchParams.get('sysparm_offset') ?? '0', 10);
+      const page = filtered.slice(offset, offset + limit);
+      return jsonResponse(res, 200, { result: page });
     }
 
     if (path === '/api/now/table/sys_properties') {

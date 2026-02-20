@@ -62,7 +62,7 @@ describe('snbatch doctor', () => {
     it('checks ws_access on tables', async () => {
       const results = await runDoctorChecks(client, creds);
       const wsChecks = results.filter((r) => r.name === 'Web Service Access');
-      expect(wsChecks).toHaveLength(2);
+      expect(wsChecks).toHaveLength(4);
       expect(wsChecks.every((r) => r.pass)).toBe(true);
     });
 
@@ -108,8 +108,7 @@ describe('snbatch doctor', () => {
       const results = await runDoctorChecks(client, creds);
       const wsChecks = results.filter((r) => r.name === 'Web Service Access');
       const passing = wsChecks.filter((r) => r.pass);
-      expect(passing).toHaveLength(1);
-      expect(passing[0].detail).toContain('sys_app_version');
+      expect(passing).toHaveLength(3); // sys_app_version, sys_plugins, sys_properties
     });
   });
 
