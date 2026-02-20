@@ -113,26 +113,28 @@ Execute a batch update.
 snbatch install --patches                        # All patches on active instance
 snbatch install --manifest dev-manifest.json     # From a manifest
 snbatch install --manifest plan.json -y          # Skip confirmation (patches/minor only)
+snbatch install --patches --continue-on-error    # Keep going after failures
+snbatch install --patches --stop-on-error        # Halt on first failure, no prompt
+snbatch install --patches --start-at 02:00       # Schedule for 2 AM
 ```
 
 **Safety:**
 - Patches/minor: y/N confirmation prompt (skippable with `-y`)
 - Major updates: must type the instance hostname — **never skippable**
-- Batch install runs server-side — if your terminal disconnects, the install continues
+- Each app installs sequentially; on failure, prompts to continue or halt (non-TTY defaults to halt)
 
 ### `snbatch rollback`
 
-Roll back a batch installation (all-or-nothing).
+Roll back a previous installation session.
 
 ```bash
-snbatch rollback --last             # Most recent batch
-snbatch rollback --batch-id <id>    # Specific batch
-snbatch rollback --list             # Show rollback-eligible batches
+snbatch rollback --last             # Most recent session
+snbatch rollback --list             # Show rollback-eligible sessions
 ```
 
 Always requires typed instance hostname confirmation.
 
-> **Note:** Rollback is all-or-nothing per batch. For granular rollback, run patches, minor, and major as separate batches.
+Each app installed in sequential mode tracks its own rollback version. Rollback calls the per-app rollback API for each app in the session. For granular control, run patches, minor, and major as separate sessions.
 
 ### `snbatch reconcile`
 

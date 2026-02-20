@@ -27,20 +27,26 @@ Community workarounds exist (CI/CD Spoke subflows, Flow Designer approaches) but
 
 | API | Purpose |
 |---|---|
-| `POST /api/sn_cicd/app/batch/install` | Execute batch installation |
-| `POST /api/sn_cicd/app/batch/rollback` | Rollback a batch |
-| `GET /api/sn_cicd/progress/{id}` | Poll installation progress |
-| `GET /api/now/table/sys_store_app` | Discover installed apps with updates |
-| `GET /api/now/table/sys_app_version` | Get available versions per app |
-| `GET /api/now/table/sys_properties` | Instance version detection |
-| `GET /api/now/table/sys_plugins` | Plugin status (doctor command) |
+| `POST /api/sn_cicd/app_repo/install` | Install a single app (primary) |
+| `POST /api/sn_cicd/app_repo/rollback` | Roll back a single app to a prior version |
+| `POST /api/sn_cicd/app/batch/install` | Execute batch installation (legacy `--batch` flag) |
+| `POST /api/sn_cicd/app/batch/rollback` | Rollback a batch (legacy `--batch` sessions) |
+| `GET /api/sn_cicd/progress/{id}` | Poll installation/rollback progress |
+| `GET /api/now/table/sys_store_app` | Discover installed apps, versions, demo data, jumbo flags |
+| `GET /api/now/table/sys_properties` | Instance version detection; App Repo API property check |
+| `GET /api/now/table/sys_plugins` | Plugin activation checks (doctor command) |
 | `GET /api/now/table/sys_db_object` | Web service access checks (doctor) |
 | `GET /api/now/table/sys_user_has_role` | Role checks (doctor) |
+| `GET /api/now/table/sys_alias` | CI/CD credential alias check (doctor) |
+| `GET /api/now/stats/sys_store_app` | Update count for doctor summary |
+
+> **Note on `sys_app_version`:** The doctor command checks web service access on `sys_app_version`, but snbatch no longer queries it for version lookups — available version info comes directly from the `latest_version` field on `sys_store_app`. The WS access check is retained because some instances re-enable version table queries via customizations.
 
 **Instance prerequisites:**
-- CI/CD spoke activated (`com.sn_cicd_spoke` and `com.glide.continuousdelivery`)
+- CI/CD REST API activated (`com.glide.continuousdelivery`)
+- App Repo Install API enabled (`sn_cicd.apprepo.install.enabled = true`)
 - Service account with `sn_cicd.sys_ci_automation` role
-- Web service access enabled on `sys_store_app`, `sys_app_version`, `sys_properties`
+- Web service access enabled on `sys_store_app`, `sys_app_version`, `sys_plugins`, `sys_properties`
 - **CI/CD credential alias configured** (⚠️ manual UI step required — see below)
 - The `snbatch doctor` command checks all of these and auto-fixes where possible
 
@@ -115,19 +121,22 @@ Checks all instance prerequisites and reports pass/fail for each. Optionally fix
 1. **Connectivity** — instance reachable
 2. **Authentication** — credentials valid
 3. **Instance version** — `glide.buildname` property lookup
-4. **CI/CD Spoke** — `com.sn_cicd_spoke` active
-5. **CI/CD REST API** — `com.glide.continuousdelivery` active
-6. **CI/CD Role** — user has `sn_cicd.sys_ci_automation`
-7. **Web Service Access** — `sys_store_app` has `ws_access=true`
-8. **Web Service Access** — `sys_app_version` has `ws_access=true`
-9. **Web Service Access** — `sys_properties` has `ws_access=true`
-10. **CI/CD Credential Alias** — `sn_cicd_spoke.CICD` has a credential bound (**⚠️ manual fix only**)
-11. **Updates available** — count of apps with `update_available=true`
+4. **CI/CD REST API** — `com.glide.continuousdelivery` active
+5. **App Repo Install API** — `sn_cicd.apprepo.install.enabled` property is `true` (auto-fixable)
+6. **CI/CD Credential Alias** — `sn_cicd_spoke.CICD` has a credential bound (**⚠️ manual fix only**)
+7. **CI/CD Role** — user has `sn_cicd.sys_ci_automation` (auto-fixable)
+8. **Web Service Access** — `sys_store_app` has `ws_access=true` (auto-fixable)
+9. **Web Service Access** — `sys_app_version` has `ws_access=true` (auto-fixable)
+10. **Web Service Access** — `sys_plugins` has `ws_access=true` (auto-fixable)
+11. **Web Service Access** — `sys_properties` has `ws_access=true` (**not** auto-fixable — sensitive table)
+12. **Updates available** — count of apps with `update_available=true`
 
 **Auto-fix (`snbatch doctor --fix`):**
 - Assigns `sn_cicd.sys_ci_automation` role to current user
-- Enables `ws_access` on required tables
+- Enables `ws_access` on `sys_store_app`, `sys_app_version`, `sys_plugins`
+- Sets `sn_cicd.apprepo.install.enabled = true` (creates property if absent)
 - Requires admin role and typed hostname confirmation
+- **Cannot fix** `sys_properties` web service access (too sensitive — enable manually)
 - **Cannot fix** the CI/CD credential alias — displays step-by-step manual UI instructions instead
 
 **Why this matters:** On a fresh or recently upgraded instance, `sys_store_app` and `sys_app_version` typically have web service access **disabled by default**, and the CI/CD credential alias is **never** pre-configured. Without web service access, scans return 403. Without the credential alias, installs silently hang at "Pending" forever — the #1 setup gotcha.
@@ -244,16 +253,24 @@ Executes a batch update from flags or a manifest.
 - 🟢 Patch/minor installs: y/N prompt (skippable with `-y`)
 - 🔴 Any major updates: typed hostname confirmation (never skippable)
 
-**During installation:**
-- Real-time progress polling (default every 10 seconds)
-- Batch processing is server-side — survives client disconnects
+**Install modes:**
+- **Sequential (default):** Apps installed one at a time via `/api/sn_cicd/app_repo/install`. Real-time per-app progress shown with elapsed time. Poll interval: 5 seconds. On failure: prompts to continue or halt (unless `--continue-on-error` or `--stop-on-error` is set; non-TTY defaults to halt).
+- **Batch (`--batch` flag):** Uses `/api/sn_cicd/app/batch/install`. Requires additional store connection configuration. Progress polled every 10 seconds. Survives client disconnects (server-side). For use when sequential mode isn't available.
+
+**Flags:**
+- `--continue-on-error` — proceed after individual app failures
+- `--stop-on-error` — halt on first failure without prompting
+- `--batch` — use legacy batch install API
+- `--start-at <HH:MM>` — schedule start with countdown display
 
 **After installation:**
 - Summary: succeeded / failed / skipped
-- Rollback ID stored in `~/.snbatch/history.json`
+- Per-app rollback versions stored in `~/.snbatch/history.json`
 - Full log written to `~/.snbatch/logs/`
 
 **Idempotent:** Re-running the same manifest skips already-current packages.
+
+**Pre-flight checks:** Before installing, snbatch verifies the CI/CD credential alias is configured. If not, it aborts with setup instructions rather than silently hanging.
 
 ---
 
@@ -261,7 +278,16 @@ Executes a batch update from flags or a manifest.
 
 **Command:** `snbatch rollback [options]`
 
-All-or-nothing batch rollback via CI/CD API. Always requires typed hostname confirmation.
+Rolls back installed apps to their pre-install versions. Always requires typed hostname confirmation.
+
+**Sequential sessions (default):** Each app tracks its own `rollback_version` (returned by the install API). Rollback calls `/api/sn_cicd/app_repo/rollback?scope={scope}&version={version}` per app, polling to completion. Apps are rolled back individually — you can rollback all apps from a session or target specific ones.
+
+**Batch sessions (`--batch` flag):** All-or-nothing rollback via `/api/sn_cicd/app/batch/rollback`. The rollback token from the original batch install is required.
+
+**Flags:**
+- `--last` — rollback the most recent session
+- `--list` — show rollback-eligible sessions (mode: per-app or batch)
+- `--token <id>` — rollback a specific batch session by token (legacy batch mode)
 
 ---
 
@@ -408,8 +434,9 @@ JSON Lines format in `~/.snbatch/logs/`. Credentials redacted.
 
 ## Rate Limiting & Polling
 
-- Scan/preview: 2-3 API calls + chunked version lookups
-- Install: 1 call to start + progress polling every 10s
+- Scan/preview: 1 paginated query against `sys_store_app` (all fields in one go, no chunking)
+- Install (sequential): 1 install call per app + progress polling every 5s per app
+- Install (batch): 1 call to start + progress polling every 10s
 - Back off to 30s on 429 responses
 - Max poll duration: 2 hours
 
@@ -514,6 +541,7 @@ snbatch/
 │       ├── crypto.js                 # AES-256-GCM encryption
 │       ├── confirmations.js          # Typed confirmation logic
 │       ├── config.js                 # Config file resolution
+│       ├── schedule.js               # --start-at parsing, elapsed/duration formatting
 │       └── paths.js                  # ~/.snbatch directory paths
 ├── test/
 │   ├── unit/                         # Version, manifest, reconcile, crypto, confirmations
