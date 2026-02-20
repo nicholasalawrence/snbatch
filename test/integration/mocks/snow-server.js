@@ -104,6 +104,21 @@ export async function createMockServer(opts = {}) {
       return jsonResponse(res, 200, { result: hasRole });
     }
 
+    if (path === '/api/now/table/sys_alias') {
+      const aliasId = query.match(/id=([^\^]+)/)?.[1];
+      if (aliasId === 'sn_cicd_spoke.CICD') {
+        const aliasConfig = opts.credentialAlias ?? 'configured';
+        if (aliasConfig === 'missing') {
+          return jsonResponse(res, 200, { result: [] });
+        }
+        if (aliasConfig === 'unconfigured') {
+          return jsonResponse(res, 200, { result: [{ sys_id: 'alias_001', id: 'sn_cicd_spoke.CICD', name: 'CICD', type: 'credential', configuration: '' }] });
+        }
+        return jsonResponse(res, 200, { result: [{ sys_id: 'alias_001', id: 'sn_cicd_spoke.CICD', name: 'CICD', type: 'credential', configuration: 'cred_basic_auth_001' }] });
+      }
+      return jsonResponse(res, 200, { result: [] });
+    }
+
     if (path === '/api/now/table/sys_db_object') {
       const tableName = query.match(/name=([^\^]+)/)?.[1];
       const wsDisabled = opts.wsDisabled ?? [];

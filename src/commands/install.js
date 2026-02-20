@@ -18,6 +18,7 @@ import { HISTORY_PATH, SNBATCH_DIR } from '../utils/paths.js';
 import { createLogger } from '../utils/logger.js';
 import { hashRollbackToken } from '../utils/crypto.js';
 import { parseStartAt, waitUntil, formatElapsed } from '../utils/schedule.js';
+import { checkCICDCredentialAlias } from './doctor.js';
 
 // P2-10: Restricted file permissions for history
 async function appendHistory(entry) {
@@ -361,6 +362,16 @@ export function installCommand() {
         const client = createClient(creds);
         const logger = await createLogger(creds.instanceHost);
         const retryOpts = { retries: config.retries, backoffBase: config.backoffBase };
+
+        // Pre-flight: verify CI/CD credential alias is configured
+        if (!opts.batch) {
+          const aliasOk = await checkCICDCredentialAlias(client);
+          if (!aliasOk) {
+            printError('CI/CD credential alias (sn_cicd_spoke.CICD) is not configured. Installs will hang at "Pending" forever.');
+            printInfo('Run "snbatch doctor" for step-by-step setup instructions.');
+            process.exit(2);
+          }
+        }
 
         let packages;
 

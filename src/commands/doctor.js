@@ -125,7 +125,37 @@ export async function runDoctorChecks(client, creds) {
         };
   }));
 
-  // 6. User has sn_cicd.sys_ci_automation role (renumbered from 5)
+  // 6. CI/CD Credential Alias
+  results.push(await runCheck('CI/CD Credential Alias', async () => {
+    const resp = await client.get('/api/now/table/sys_alias', {
+      params: {
+        sysparm_fields: 'sys_id,id,name,type,configuration',
+        sysparm_query: 'id=sn_cicd_spoke.CICD',
+        sysparm_limit: 1,
+      },
+    });
+    const row = resp.data.result?.[0];
+    if (!row) {
+      return {
+        pass: false,
+        detail: 'sn_cicd_spoke.CICD alias not found. Is the CI/CD Spoke activated?',
+        fixable: false,
+        manualSetup: true,
+      };
+    }
+    const hasConfig = row.configuration && row.configuration !== '' && row.configuration !== 'null';
+    if (!hasConfig) {
+      return {
+        pass: false,
+        detail: 'sn_cicd_spoke.CICD has no credential bound',
+        fixable: false,
+        manualSetup: true,
+      };
+    }
+    return { pass: true, detail: 'CI/CD credential alias configured' };
+  }));
+
+  // 7. User has sn_cicd.sys_ci_automation role
   results.push(await runCheck('CI/CD Role', async () => {
     const resp = await client.get('/api/now/table/sys_user_has_role', {
       params: {
@@ -274,6 +304,28 @@ async function setProperty(client, name, value) {
   return `Set ${name} = ${value}`;
 }
 
+/**
+ * Quick check whether the CI/CD credential alias is configured.
+ * Returns true if the alias exists and has a credential bound; false otherwise.
+ */
+export async function checkCICDCredentialAlias(client) {
+  try {
+    const resp = await client.get('/api/now/table/sys_alias', {
+      params: {
+        sysparm_fields: 'sys_id,configuration',
+        sysparm_query: 'id=sn_cicd_spoke.CICD',
+        sysparm_limit: 1,
+      },
+    });
+    const row = resp.data.result?.[0];
+    if (!row) return false;
+    return !!(row.configuration && row.configuration !== '' && row.configuration !== 'null');
+  } catch {
+    // If the table isn't accessible, skip this pre-flight check gracefully
+    return true;
+  }
+}
+
 export function doctorCommand() {
   return new Command('doctor')
     .description('Check instance prerequisites and optionally fix them')
@@ -302,6 +354,25 @@ export function doctorCommand() {
             console.log(`  ${icon} ${label} ${r.detail}`);
           }
           console.log();
+
+          // Show manual setup instructions for credential alias
+          const hasManualIssues = issues.some((r) => r.manualSetup);
+          if (hasManualIssues) {
+            printWarn('MANUAL SETUP REQUIRED — this cannot be automated.\n');
+            printWarn('The CI/CD install API needs a credential to authenticate with the');
+            printWarn('app repository. Without this, installs will hang at "Pending" forever.\n');
+            printWarn('To fix:');
+            printWarn('  1. Navigate to Connections & Credentials \u2192 Credentials');
+            printWarn('  2. Click New \u2192 Basic Auth Credentials');
+            printWarn('  3. Set Name: "CICD Service Account"');
+            printWarn('  4. Set User name: (an admin user on this instance)');
+            printWarn('  5. Set Password: (that user\'s password)');
+            printWarn('  6. Unlock the Credential alias field (click the lock icon)');
+            printWarn('  7. Set Credential alias: sn_cicd_spoke.CICD');
+            printWarn('  8. Click Submit\n');
+            printWarn('Then re-run: snbatch doctor');
+            console.log();
+          }
         }
 
         if (!issues.length) {
@@ -310,7 +381,10 @@ export function doctorCommand() {
         }
 
         if (!isJson) {
-          printWarn(`${issues.length} issue(s) found.`);
+          const manualCount = issues.filter((r) => r.manualSetup).length;
+          const parts = [`${issues.length} issue(s) found.`];
+          if (manualCount > 0) parts.push(`${manualCount} requires manual setup (see above).`);
+          printWarn(parts.join(' '));
         }
 
         // --fix mode

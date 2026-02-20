@@ -58,6 +58,13 @@ describe('snbatch doctor', () => {
       expect(appRepo.detail).toContain('enabled');
     });
 
+    it('checks CI/CD credential alias', async () => {
+      const results = await runDoctorChecks(client, creds);
+      const alias = results.find((r) => r.name === 'CI/CD Credential Alias');
+      expect(alias.pass).toBe(true);
+      expect(alias.detail).toContain('configured');
+    });
+
     it('checks CI/CD role', async () => {
       const results = await runDoctorChecks(client, creds);
       const role = results.find((r) => r.name === 'CI/CD Role');
@@ -114,6 +121,38 @@ describe('snbatch doctor', () => {
       const wsChecks = results.filter((r) => r.name === 'Web Service Access');
       const passing = wsChecks.filter((r) => r.pass);
       expect(passing).toHaveLength(3); // sys_app_version, sys_plugins, sys_properties
+    });
+  });
+
+  describe('credential alias missing', () => {
+    beforeEach(async () => {
+      mock = await createMockServer({ credentialAlias: 'missing' });
+      client = createClient({ baseUrl: mock.baseUrl, username: 'admin', password: 'test' });
+    });
+
+    it('reports missing alias as not fixable with manual setup flag', async () => {
+      const results = await runDoctorChecks(client, creds);
+      const alias = results.find((r) => r.name === 'CI/CD Credential Alias');
+      expect(alias.pass).toBe(false);
+      expect(alias.detail).toContain('not found');
+      expect(alias.fixable).toBe(false);
+      expect(alias.manualSetup).toBe(true);
+    });
+  });
+
+  describe('credential alias unconfigured', () => {
+    beforeEach(async () => {
+      mock = await createMockServer({ credentialAlias: 'unconfigured' });
+      client = createClient({ baseUrl: mock.baseUrl, username: 'admin', password: 'test' });
+    });
+
+    it('reports unconfigured alias as not fixable with manual setup flag', async () => {
+      const results = await runDoctorChecks(client, creds);
+      const alias = results.find((r) => r.name === 'CI/CD Credential Alias');
+      expect(alias.pass).toBe(false);
+      expect(alias.detail).toContain('no credential bound');
+      expect(alias.fixable).toBe(false);
+      expect(alias.manualSetup).toBe(true);
     });
   });
 

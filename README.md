@@ -12,7 +12,9 @@ After every ServiceNow upgrade, admins face 100–200+ store applications needin
 npm install -g snbatch
 ```
 
-**Requirements:** Node.js ≥ 22, ServiceNow CI/CD REST API plugin (`com.glide.continuousdelivery`) activated, App Repo Install API enabled (`sn_cicd.apprepo.install.enabled = true`), service account with `sn_cicd.sys_ci_automation` role. Run `snbatch doctor` to verify prerequisites.
+**Requirements:** Node.js ≥ 22, ServiceNow CI/CD REST API plugin (`com.glide.continuousdelivery`) activated, App Repo Install API enabled (`sn_cicd.apprepo.install.enabled = true`), CI/CD credential alias configured, service account with `sn_cicd.sys_ci_automation` role. Run `snbatch doctor` to verify prerequisites.
+
+> **Critical setup step:** The CI/CD Spoke requires a Basic Auth credential bound to the `sn_cicd_spoke.CICD` credential alias. This must be configured manually through the ServiceNow UI — it cannot be automated. Run `snbatch doctor` for step-by-step instructions. Without this, all installs will silently hang.
 
 ## Quick Start
 
@@ -200,6 +202,18 @@ snbatch serve --mcp
 | `GET /api/now/table/sys_store_app` | Discover installed apps and available updates |
 | `POST /api/sn_cicd/app/batch/install` | Batch install (`--batch` flag) |
 | `POST /api/sn_cicd/app/batch/rollback` | Batch rollback (legacy) |
+
+## Known Instance Gotchas
+
+### CI/CD Credential Alias Not Configured (Installs Hang at "Pending")
+
+**Symptom:** Install accepted by API but stays at "Pending" or "Pending resource locks" forever, never progresses to "Running."
+
+**Cause:** The CI/CD Spoke's `sn_cicd_spoke.CICD` credential alias has no Basic Auth credential bound to it. The install engine can't authenticate with the app repository to download packages.
+
+**Fix:** Must be done manually through the UI. Navigate to Connections & Credentials → Credentials, create a Basic Auth credential with admin credentials, unlock the Credential alias field, and bind it to `sn_cicd_spoke.CICD`.
+
+**Note:** The Credential alias field on the credential form has a UI-level lock icon that must be clicked to unlock before the field can be edited. This lock prevents programmatic writes via GlideRecord, which is why `snbatch doctor --fix` cannot automate this step.
 
 ## License
 
