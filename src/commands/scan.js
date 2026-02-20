@@ -36,7 +36,11 @@ export async function scanData(profileName, config) {
   const filtered = allPackages.filter((p) => !(config.excludeAlways ?? []).includes(p.scope));
 
   // Fetch available versions for apps (plugins don't use the same version API)
-  const sourceIds = filtered.filter((p) => p.type === 'app' && p.sourceId).map((p) => p.sourceId);
+  // Only valid 32-char hex sys_ids — scope names like sn_csm.awa are not queryable
+  const sourceIds = filtered
+    .filter((p) => p.type === 'app' && p.sourceId)
+    .map((p) => p.sourceId)
+    .filter((id) => /^[a-f0-9]{32}$/.test(id));
   const versionMap = await fetchAvailableVersions(client, sourceIds, retryOpts);
 
   const packages = filtered.map((p) => {

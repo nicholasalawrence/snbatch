@@ -1,6 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { resolveCredentials } from '../../src/api/auth.js';
 
+// Mock getProfile so the non-TTY test doesn't resolve from a saved profile
+vi.mock('../../src/utils/profiles.js', async (importOriginal) => {
+  const orig = await importOriginal();
+  return { ...orig, getProfile: vi.fn() };
+});
+import { getProfile } from '../../src/utils/profiles.js';
+
 describe('HTTPS enforcement (P1-4)', () => {
   beforeEach(() => {
     vi.stubEnv('SNBATCH_INSTANCE', 'http://dev.service-now.com');
@@ -47,14 +54,18 @@ describe('non-TTY auth detection (P2-3)', () => {
 
   beforeEach(() => {
     origIsTTY = process.stdin.isTTY;
-    // Clear env vars so we fall through to interactive prompt
-    delete process.env.SNBATCH_INSTANCE;
-    delete process.env.SNBATCH_USERNAME;
-    delete process.env.SNBATCH_PASSWORD;
+    // Clear env vars so we fall through to profile lookup
+    vi.stubEnv('SNBATCH_INSTANCE', '');
+    vi.stubEnv('SNBATCH_USERNAME', '');
+    vi.stubEnv('SNBATCH_PASSWORD', '');
+    // Mock getProfile to reject so we fall through to the TTY check
+    getProfile.mockRejectedValue(new Error('no profile'));
   });
 
   afterEach(() => {
     process.stdin.isTTY = origIsTTY;
+    vi.unstubAllEnvs();
+    getProfile.mockReset();
   });
 
   it('throws with helpful message in non-TTY environment', async () => {

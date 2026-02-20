@@ -47,6 +47,7 @@ export async function fetchInstalledApps(client, retryOpts = {}) {
 
 /**
  * Fetch the latest available version for a list of source IDs.
+ * Batches requests to avoid 414 URI Too Long errors on large instances.
  * @param {import('axios').AxiosInstance} client
  * @param {string[]} sourceIds
  * @param {{ retries?: number, backoffBase?: number }} [retryOpts]
@@ -59,26 +60,32 @@ export async function fetchAvailableVersions(client, sourceIds, retryOpts = {}) 
   const safeIds = validateSourceIds(sourceIds);
   if (!safeIds.length) return new Map();
 
-  const query = `sourceIN${safeIds.join(',')}`;
-  const resp = await withRetry(
-    () => client.get('/api/now/table/sys_app_version', {
-      params: {
-        sysparm_fields: 'source,version',
-        sysparm_limit: 5000,
-        sysparm_query: query,
-        sysparm_orderby: 'version^DESC',
-      },
-    }),
-    retryOpts
-  );
-
+  const CHUNK_SIZE = 50;
   const map = new Map();
-  for (const r of resp.data.result ?? []) {
-    const src = r.source?.value ?? r.source;
-    if (src && !map.has(src)) {
-      map.set(src, r.version);
+
+  for (let i = 0; i < safeIds.length; i += CHUNK_SIZE) {
+    const chunk = safeIds.slice(i, i + CHUNK_SIZE);
+    const query = `sourceIN${chunk.join(',')}`;
+    const resp = await withRetry(
+      () => client.get('/api/now/table/sys_app_version', {
+        params: {
+          sysparm_fields: 'source,version',
+          sysparm_limit: 5000,
+          sysparm_query: query,
+          sysparm_orderby: 'version^DESC',
+        },
+      }),
+      retryOpts
+    );
+
+    for (const r of resp.data.result ?? []) {
+      const src = r.source?.value ?? r.source;
+      if (src && !map.has(src)) {
+        map.set(src, r.version);
+      }
     }
   }
+
   return map;
 }
 
